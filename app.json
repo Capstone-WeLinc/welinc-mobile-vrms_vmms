@@ -4,7 +4,7 @@
     "slug": "welinc-mobile-vmms",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/welinc_logo.jpg",
     "userInterfaceStyle": "light",
     "ios": {
       "supportsTablet": true
