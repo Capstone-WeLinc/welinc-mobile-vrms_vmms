@@ -47,8 +47,7 @@ export function LoginScreen({ authService, onAuthenticated }: LoginScreenProps) 
     >
       <View style={styles.card}>
         <Text style={styles.title}>VMMS Mobile</Text>
-        <Text style={styles.subtitle}>Sign in to synchronize maintenance data.</Text>
-
+        <Text style={styles.subtitle}>Sign in to your account</Text>
         <Text style={styles.label}>Email</Text>
         <TextInput
           autoCapitalize="none"
@@ -56,7 +55,7 @@ export function LoginScreen({ authService, onAuthenticated }: LoginScreenProps) 
           editable={!loading}
           keyboardType="email-address"
           onChangeText={setEmail}
-          placeholder="name@example.com"
+          placeholder="vmms.name@welinc.com"
           style={styles.input}
           value={email}
         />
@@ -84,7 +83,6 @@ export function LoginScreen({ authService, onAuthenticated }: LoginScreenProps) 
           {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>Sign in</Text>}
         </Pressable>
 
-        <Text style={styles.endpoint}>Backend: {API_BASE_URL}</Text>
       </View>
     </KeyboardAvoidingView>
   );

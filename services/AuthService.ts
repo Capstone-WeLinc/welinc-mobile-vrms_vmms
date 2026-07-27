@@ -4,9 +4,11 @@ import * as SecureStore from 'expo-secure-store';
 const ACCESS_TOKEN_KEY = 'vmms_access_token';
 const USER_KEY = 'vmms_authenticated_user';
 
+const DEFAULT_API_BASE_URL = 'http://localhost:3000';
+
 export const API_BASE_URL =
   process.env.EXPO_PUBLIC_API_BASE_URL?.trim().replace(/\/$/, '') ||
-  'http://localhost:3000';
+  DEFAULT_API_BASE_URL;
 
 export interface AuthenticatedUser {
   id: string;
