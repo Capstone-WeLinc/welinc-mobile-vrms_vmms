@@ -1,16 +1,18 @@
-import NetInfo, { type NetInfoSubscription } from '@react-native-community/netinfo';
-import axios, { type AxiosInstance } from 'axios';
+import NetInfo, {
+  type NetInfoSubscription,
+} from "@react-native-community/netinfo";
+import axios, { type AxiosInstance } from "axios";
 
-import { initializeDatabase } from '../database/database';
+import { initializeDatabase } from "../database/database";
 import type {
   ChecklistItem,
   ChecklistTemplate,
   MaintenanceSchedule,
   Vehicle,
-} from '../database/tables';
-import { ChecklistRepository } from '../repositories/ChecklistRepository';
-import { MaintenanceRepository } from '../repositories/MaintenanceRepository';
-import { VehicleRepository } from '../repositories/VehicleRepository';
+} from "../database/tables";
+import { ChecklistRepository } from "../repositories/ChecklistRepository";
+import { MaintenanceRepository } from "../repositories/MaintenanceRepository";
+import { VehicleRepository } from "../repositories/VehicleRepository";
 
 type AccessTokenProvider = () => Promise<string | null> | string | null;
 
@@ -21,7 +23,7 @@ export interface SyncServiceOptions {
 }
 
 export interface SyncResult {
-  status: 'synchronized' | 'offline';
+  status: "synchronized" | "offline";
   synchronizedAt: string | null;
   vehicles: number;
   maintenanceSchedules: number;
@@ -78,15 +80,25 @@ export class SyncService {
   private readonly listeners = new Set<(result: SyncResult) => void>();
 
   constructor(options: SyncServiceOptions) {
-    const apiBaseUrl = options.apiBaseUrl.trim().replace(/\/$/, '');
-    if (!apiBaseUrl) throw new Error('SyncService requires a non-empty API base URL');
+    const apiBaseUrl = options.apiBaseUrl.trim().replace(/\/$/, "");
+    if (!apiBaseUrl)
+      throw new Error("SyncService requires a non-empty API base URL");
 
     this.api = axios.create({
       baseURL: apiBaseUrl,
       timeout: options.requestTimeoutMs ?? 15_000,
-      headers: { Accept: 'application/json' },
+      headers: { Accept: "application/json" },
     });
     this.getAccessToken = options.getAccessToken;
+
+    // Add request interceptor to include authorization token
+    this.api.interceptors.request.use(async (config) => {
+      const token = await options.getAccessToken?.();
+      if (token) {
+        config.headers.Authorization = `Bearer ${token}`;
+      }
+      return config;
+    });
   }
 
   /** Synchronize immediately. Concurrent callers share one request. */
@@ -114,10 +126,11 @@ export class SyncService {
     if (this.unsubscribeFromNetwork) return () => this.stopAutoSync();
 
     this.unsubscribeFromNetwork = NetInfo.addEventListener((state) => {
-      const isOnline = state.isConnected === true && state.isInternetReachable !== false;
+      const isOnline =
+        state.isConnected === true && state.isInternetReachable !== false;
       if (isOnline && !this.wasOnline) {
         void this.sync().catch((error) => {
-          console.error('[Sync] Automatic synchronization failed', error);
+          console.error("[Sync] Automatic synchronization failed", error);
         });
       }
       this.wasOnline = isOnline;
@@ -146,27 +159,27 @@ export class SyncService {
       network.isConnected === true && network.isInternetReachable !== false;
 
     if (!isOnline) {
-      console.info('[Sync] Offline; using the local SQLite cache');
+      console.info("[Sync] Offline; using the local SQLite cache");
       return this.getOfflineResult();
     }
 
     const synchronizedAt = new Date().toISOString();
 
     try {
-      const token = await this.getAccessToken?.();
-      const config = token ? { headers: { Authorization: `Bearer ${token}` } } : undefined;
-      const [vehicleResponse, scheduleResponse, checklistResponse] = await Promise.all([
-        this.api.get<ServerVehicle[]>('/vehicles', config),
-        this.api.get<ServerMaintenanceSchedule[]>('/maintenance-schedules', config),
-        this.api.get<ServerChecklistResponse>('/checklists', config),
-      ]);
+      const [vehicleResponse, scheduleResponse, checklistResponse] =
+        await Promise.all([
+          this.api.get<ServerVehicle[]>("/vehicles"),
+          this.api.get<ServerMaintenanceSchedule[]>("/maintenance-schedules"),
+          this.api.get<ServerChecklistResponse>("/checklists"),
+        ]);
 
-      const vehicles = unwrapArray<ServerVehicle>(vehicleResponse.data, 'vehicles').map((vehicle) =>
-        mapVehicle(vehicle, synchronizedAt),
-      );
+      const vehicles = unwrapArray<ServerVehicle>(
+        vehicleResponse.data,
+        "vehicles",
+      ).map((vehicle) => mapVehicle(vehicle, synchronizedAt));
       const schedules = unwrapArray<ServerMaintenanceSchedule>(
         scheduleResponse.data,
-        'maintenanceSchedules',
+        "maintenanceSchedules",
       ).map((schedule) => mapMaintenanceSchedule(schedule, synchronizedAt));
       const { templates, items } = mapChecklists(
         unwrapObject(checklistResponse.data),
@@ -176,8 +189,13 @@ export class SyncService {
       const db = await initializeDatabase();
       await db.withExclusiveTransactionAsync(async (transaction) => {
         await new VehicleRepository(transaction).reconcileSnapshot(vehicles);
-        await new MaintenanceRepository(transaction).reconcileSnapshot(schedules);
-        await new ChecklistRepository(transaction).reconcileSnapshot(templates, items);
+        await new MaintenanceRepository(transaction).reconcileSnapshot(
+          schedules,
+        );
+        await new ChecklistRepository(transaction).reconcileSnapshot(
+          templates,
+          items,
+        );
         await transaction.runAsync(
           `INSERT INTO sync_metadata (key, value) VALUES ('lastSuccessfulSyncAt', ?)
            ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
@@ -190,7 +208,7 @@ export class SyncService {
           `${templates.length} templates, ${items.length} checklist items`,
       );
       return {
-        status: 'synchronized',
+        status: "synchronized",
         synchronizedAt,
         vehicles: vehicles.length,
         maintenanceSchedules: schedules.length,
@@ -218,7 +236,7 @@ export class SyncService {
       (SELECT COUNT(*) FROM checklist_items) AS items`);
 
     return {
-      status: 'offline',
+      status: "offline",
       synchronizedAt: await this.getLastSuccessfulSyncAt(),
       vehicles: counts?.vehicles ?? 0,
       maintenanceSchedules: counts?.schedules ?? 0,
@@ -230,13 +248,16 @@ export class SyncService {
 
 function mapVehicle(record: ServerVehicle, fallbackTimestamp: string): Vehicle {
   return {
-    id: requireText(record.id, 'vehicle.id'),
-    plateNumber: requireText(record.plateNumber, 'vehicle.plateNumber'),
-    vehicleModel: requireText(record.vehicleModel ?? record.model, 'vehicle.model'),
-    status: requireText(record.status, 'vehicle.status'),
+    id: requireText(record.id, "vehicle.id"),
+    plateNumber: requireText(record.plateNumber, "vehicle.plateNumber"),
+    vehicleModel: requireText(
+      record.vehicleModel ?? record.model,
+      "vehicle.model",
+    ),
+    status: requireText(record.status, "vehicle.status"),
     odometerReading: toNonNegativeInteger(
       record.odometerReading ?? record.odometer ?? 0,
-      'vehicle.odometerReading',
+      "vehicle.odometerReading",
     ),
     updatedAt: validTimestampOrFallback(record.updatedAt, fallbackTimestamp),
   };
@@ -247,14 +268,18 @@ function mapMaintenanceSchedule(
   fallbackTimestamp: string,
 ): MaintenanceSchedule {
   return {
-    id: requireText(record.id, 'maintenanceSchedule.id'),
-    vehicleId: requireText(record.vehicleId, 'maintenanceSchedule.vehicleId'),
-    title: requireText(record.title, 'maintenanceSchedule.title'),
+    id: requireText(record.id, "maintenanceSchedule.id"),
+    vehicleId: requireText(record.vehicleId, "maintenanceSchedule.vehicleId"),
+    title: requireText(record.title, "maintenanceSchedule.title"),
     triggerType: optionalText(record.triggerType),
     intervalType: optionalText(record.intervalType),
-    status: requireText(record.status, 'maintenanceSchedule.status'),
-    assignedMechanic: optionalText(record.assignedMechanic ?? record.assignedDriver),
-    dueDate: optionalText(record.dueDate ?? record.startReferenceDate ?? record.date),
+    status: requireText(record.status, "maintenanceSchedule.status"),
+    assignedMechanic: optionalText(
+      record.assignedMechanic ?? record.assignedDriver,
+    ),
+    dueDate: optionalText(
+      record.dueDate ?? record.startReferenceDate ?? record.date,
+    ),
     updatedAt: validTimestampOrFallback(record.updatedAt, fallbackTimestamp),
   };
 }
@@ -273,7 +298,10 @@ function mapChecklists(
       items.push({
         id: requireText(item.id, `checklist item in ${name}`),
         templateId,
-        description: requireText(item.description ?? item.text, `checklist item ${item.id}`),
+        description: requireText(
+          item.description ?? item.text,
+          `checklist item ${item.id}`,
+        ),
         isChecked: false,
       });
     }
@@ -289,43 +317,50 @@ function unwrapArray<T>(value: unknown, key: string): T[] {
 }
 
 function unwrapObject(value: unknown): ServerChecklistResponse {
-  const candidate = isObject(value) && isObject(value.data) ? value.data : value;
-  if (!isObject(candidate)) throw new Error('The API returned an invalid checklists response');
+  const candidate =
+    isObject(value) && isObject(value.data) ? value.data : value;
+  if (!isObject(candidate))
+    throw new Error("The API returned an invalid checklists response");
   for (const [key, items] of Object.entries(candidate)) {
-    if (!Array.isArray(items)) throw new Error(`Checklist template ${key} is not an array`);
+    if (!Array.isArray(items))
+      throw new Error(`Checklist template ${key} is not an array`);
   }
   return candidate as ServerChecklistResponse;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
+  return typeof value === "object" && value !== null;
 }
 
 function requireText(value: unknown, field: string): string {
-  if (typeof value !== 'string' || !value.trim()) throw new Error(`Missing ${field}`);
+  if (typeof value !== "string" || !value.trim())
+    throw new Error(`Missing ${field}`);
   return value.trim();
 }
 
 function optionalText(value: unknown): string | null {
-  return typeof value === 'string' && value.trim() ? value.trim() : null;
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function toNonNegativeInteger(value: unknown, field: string): number {
   const number = Number(value);
-  if (!Number.isFinite(number) || number < 0) throw new Error(`Invalid ${field}`);
+  if (!Number.isFinite(number) || number < 0)
+    throw new Error(`Invalid ${field}`);
   return Math.trunc(number);
 }
 
 function validTimestampOrFallback(value: unknown, fallback: string): string {
-  if (typeof value !== 'string' || Number.isNaN(Date.parse(value))) return fallback;
+  if (typeof value !== "string" || Number.isNaN(Date.parse(value)))
+    return fallback;
   return new Date(value).toISOString();
 }
 
 function getSyncErrorMessage(error: unknown): string {
   if (axios.isAxiosError(error)) {
-    if (error.response) return `API request failed with status ${error.response.status}`;
-    if (error.code === 'ECONNABORTED') return 'API request timed out';
-    return error.message || 'Network request failed';
+    if (error.response)
+      return `API request failed with status ${error.response.status}`;
+    if (error.code === "ECONNABORTED") return "API request timed out";
+    return error.message || "Network request failed";
   }
   return error instanceof Error ? error.message : String(error);
 }

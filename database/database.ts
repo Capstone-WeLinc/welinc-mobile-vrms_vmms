@@ -1,8 +1,8 @@
-import * as SQLite from 'expo-sqlite';
+import * as SQLite from "expo-sqlite";
 
-import { ChecklistRepository } from '../repositories/ChecklistRepository';
-import { MaintenanceRepository } from '../repositories/MaintenanceRepository';
-import { VehicleRepository } from '../repositories/VehicleRepository';
+import { ChecklistRepository } from "../repositories/ChecklistRepository";
+import { MaintenanceRepository } from "../repositories/MaintenanceRepository";
+import { VehicleRepository } from "../repositories/VehicleRepository";
 import {
   ChecklistItem,
   ChecklistTemplate,
@@ -11,14 +11,41 @@ import {
   DATABASE_VERSION,
   MaintenanceSchedule,
   Vehicle,
-} from './tables';
+} from "./tables";
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
+async function openDatabase(): Promise<SQLite.SQLiteDatabase> {
+  try {
+    return await SQLite.openDatabaseAsync(DATABASE_NAME);
+  } catch (error) {
+    console.warn(
+      "[SQLite] openDatabaseAsync failed, falling back to openDatabaseSync",
+      error,
+    );
+    return SQLite.openDatabaseSync(DATABASE_NAME);
+  }
+}
+
+async function execSqlStatements(
+  db: SQLite.SQLiteDatabase,
+  sql: string,
+): Promise<void> {
+  const statements = sql
+    .split(/;\s*/)
+    .map((statement) => statement.trim())
+    .filter(Boolean);
+
+  for (const statement of statements) {
+    await db.execAsync(statement);
+  }
+}
+
 export async function initializeDatabase(): Promise<SQLite.SQLiteDatabase> {
   if (!databasePromise) {
-    databasePromise = SQLite.openDatabaseAsync(DATABASE_NAME).then(async (database) => {
-      await database.execAsync('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
+    databasePromise = openDatabase().then(async (database) => {
+      await database.execAsync("PRAGMA journal_mode = WAL");
+      await database.execAsync("PRAGMA foreign_keys = ON");
       await createTables(database);
       return database;
     });
@@ -28,16 +55,22 @@ export async function initializeDatabase(): Promise<SQLite.SQLiteDatabase> {
     return await databasePromise;
   } catch (error) {
     databasePromise = null;
-    console.error('[SQLite] Database initialization failed', error);
-    throw new Error(`Unable to initialize ${DATABASE_NAME}: ${getErrorMessage(error)}`);
+    console.error("[SQLite] Database initialization failed", error);
+    throw new Error(
+      `Unable to initialize ${DATABASE_NAME}: ${getErrorMessage(error)}`,
+    );
   }
 }
 
-export async function createTables(database?: SQLite.SQLiteDatabase): Promise<void> {
-  const db = database ?? (await SQLite.openDatabaseAsync(DATABASE_NAME));
+export async function createTables(
+  database?: SQLite.SQLiteDatabase,
+): Promise<void> {
+  const db = database ?? (await openDatabase());
 
   try {
-    const versionRow = await db.getFirstAsync<{ user_version: number }>('PRAGMA user_version');
+    const versionRow = await db.getFirstAsync<{ user_version: number }>(
+      "PRAGMA user_version",
+    );
     const currentVersion = versionRow?.user_version ?? 0;
 
     if (currentVersion > DATABASE_VERSION) {
@@ -47,11 +80,11 @@ export async function createTables(database?: SQLite.SQLiteDatabase): Promise<vo
     }
 
     if (currentVersion < 1) {
-      await db.execAsync(CREATE_TABLES_SQL);
+      await execSqlStatements(db, CREATE_TABLES_SQL);
       await db.execAsync(`PRAGMA user_version = ${DATABASE_VERSION}`);
     }
   } catch (error) {
-    console.error('[SQLite] Table creation failed', error);
+    console.error("[SQLite] Table creation failed", error);
     throw new Error(`Unable to create local tables: ${getErrorMessage(error)}`);
   }
 }
@@ -65,14 +98,14 @@ export async function clearDatabase(): Promise<void> {
 
   try {
     await db.withExclusiveTransactionAsync(async (transaction) => {
-      await transaction.runAsync('DELETE FROM checklist_items');
-      await transaction.runAsync('DELETE FROM checklist_templates');
-      await transaction.runAsync('DELETE FROM maintenance_schedules');
-      await transaction.runAsync('DELETE FROM vehicles');
-      await transaction.runAsync('DELETE FROM sync_metadata');
+      await transaction.runAsync("DELETE FROM checklist_items");
+      await transaction.runAsync("DELETE FROM checklist_templates");
+      await transaction.runAsync("DELETE FROM maintenance_schedules");
+      await transaction.runAsync("DELETE FROM vehicles");
+      await transaction.runAsync("DELETE FROM sync_metadata");
     });
   } catch (error) {
-    console.error('[SQLite] Clear database failed', error);
+    console.error("[SQLite] Clear database failed", error);
     throw new Error(`Unable to clear local data: ${getErrorMessage(error)}`);
   }
 }
@@ -82,7 +115,10 @@ export async function insertVehicle(vehicle: Vehicle): Promise<void> {
   return new VehicleRepository(await getDatabase()).insertVehicle(vehicle);
 }
 
-export async function updateVehicle(id: string, changes: Partial<Omit<Vehicle, 'id'>>): Promise<void> {
+export async function updateVehicle(
+  id: string,
+  changes: Partial<Omit<Vehicle, "id">>,
+): Promise<void> {
   return new VehicleRepository(await getDatabase()).updateVehicle(id, changes);
 }
 
@@ -98,19 +134,29 @@ export async function getVehicleById(id: string): Promise<Vehicle | null> {
   return new VehicleRepository(await getDatabase()).getVehicleById(id);
 }
 
-export async function insertMaintenanceSchedule(schedule: MaintenanceSchedule): Promise<void> {
-  return new MaintenanceRepository(await getDatabase()).insertMaintenanceSchedule(schedule);
+export async function insertMaintenanceSchedule(
+  schedule: MaintenanceSchedule,
+): Promise<void> {
+  return new MaintenanceRepository(
+    await getDatabase(),
+  ).insertMaintenanceSchedule(schedule);
 }
 
-export async function getMaintenanceSchedules(vehicleId?: string): Promise<MaintenanceSchedule[]> {
-  return new MaintenanceRepository(await getDatabase()).getMaintenanceSchedules(vehicleId);
+export async function getMaintenanceSchedules(
+  vehicleId?: string,
+): Promise<MaintenanceSchedule[]> {
+  return new MaintenanceRepository(await getDatabase()).getMaintenanceSchedules(
+    vehicleId,
+  );
 }
 
 export async function getChecklistTemplates(): Promise<ChecklistTemplate[]> {
   return new ChecklistRepository(await getDatabase()).getTemplates();
 }
 
-export async function getChecklistItems(templateId: string): Promise<ChecklistItem[]> {
+export async function getChecklistItems(
+  templateId: string,
+): Promise<ChecklistItem[]> {
   return new ChecklistRepository(await getDatabase()).getItems(templateId);
 }
 
