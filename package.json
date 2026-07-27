@@ -1,5 +1,5 @@
 {
-  "name": "welinc-mobile-bms",
+  "name": "welinc-mobile-vmms",
   "version": "1.0.0",
   "main": "index.ts",
   "dependencies": {

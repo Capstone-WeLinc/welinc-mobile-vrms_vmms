@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "welinc-mobile-bms",
-    "slug": "welinc-mobile-bms",
+    "name": "welinc-mobile-vmms",
+    "slug": "welinc-mobile-vmms",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
