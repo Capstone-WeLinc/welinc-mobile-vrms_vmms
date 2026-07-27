@@ -1,5 +1,4 @@
 import { StatusBar } from "expo-status-bar";
-import { useDrizzleStudio } from "expo-drizzle-studio-plugin";
 import * as SQLite from "expo-sqlite";
 import { useEffect, useState } from "react";
 import {
@@ -26,7 +25,6 @@ import { SyncService } from "./services/SyncService";
 
 const authService = new AuthService(API_BASE_URL);
 const welinc = require("./assets/welinc_logo.jpg");
-const studioDatabase = SQLite.openDatabaseSync(DATABASE_NAME);
 
 const syncService = new SyncService({
   apiBaseUrl: API_BASE_URL,
@@ -34,8 +32,6 @@ const syncService = new SyncService({
 });
 
 export default function App() {
-  useDrizzleStudio(studioDatabase);
-
   const [startupStatus, setStartupStatus] = useState<
     "loading" | "ready" | "error"
   >("loading");

@@ -22,9 +22,7 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "expo-sqlite",
-      "expo-secure-store",
-      "expo-drizzle-studio-plugin"
+      "expo-secure-store"
     ]
   }
 }
