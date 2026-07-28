@@ -7,6 +7,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  TouchableOpacity,
   View,
 } from 'react-native';
 
@@ -22,6 +23,7 @@ export function LoginScreen({ authService, onAuthenticated }: LoginScreenProps) 
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showPassword, setShowPassword] = useState(false);
 
   const login = async () => {
     if (!email.trim() || !password) {
@@ -61,17 +63,26 @@ export function LoginScreen({ authService, onAuthenticated }: LoginScreenProps) 
         />
 
         <Text style={styles.label}>Password</Text>
-        <TextInput
-          autoCapitalize="none"
-          autoComplete="password"
-          editable={!loading}
-          onChangeText={setPassword}
-          onSubmitEditing={() => void login()}
-          placeholder="Password"
-          secureTextEntry
-          style={styles.input}
-          value={password}
-        />
+        <View style={styles.passwordRow}>
+          <TextInput
+            autoCapitalize="none"
+            autoComplete="password"
+            editable={!loading}
+            onChangeText={setPassword}
+            onSubmitEditing={() => void login()}
+            placeholder="Password"
+            secureTextEntry={!showPassword}
+            style={[styles.input, styles.passwordInput]}
+            value={password}
+          />
+          <TouchableOpacity
+            activeOpacity={0.8}
+            onPress={() => setShowPassword((value) => !value)}
+            style={styles.passwordToggle}
+          >
+            <Text style={styles.passwordToggleText}>{showPassword ? 'Hide' : 'Show'}</Text>
+          </TouchableOpacity>
+        </View>
 
         {error ? <Text style={styles.error}>{error}</Text> : null}
 
@@ -102,6 +113,17 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     backgroundColor: '#fff',
   },
+  passwordRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  passwordInput: { flex: 1 },
+  passwordToggle: {
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    backgroundColor: '#f8fafc',
+  },
+  passwordToggleText: { color: '#1d4ed8', fontWeight: '700' },
   button: { marginTop: 14, borderRadius: 10, padding: 14, alignItems: 'center', backgroundColor: '#1d4ed8' },
   buttonDisabled: { opacity: 0.65 },
   buttonText: { color: '#fff', fontWeight: '700' },

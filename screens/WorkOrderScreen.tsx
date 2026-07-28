@@ -10,6 +10,8 @@ import {
   Alert,
 } from "react-native";
 
+import type { AuthenticatedUser, MobileAccessRole } from "../services/AuthService";
+
 type WorkOrderStatus = "Pending" | "In Progress" | "Overdue" | "Completed";
 type StepKey = 1 | 2 | 3;
 
@@ -262,20 +264,42 @@ const initialWorkOrders: WorkOrder[] = [
   },
 ];
 
-export function WorkOrderScreen() {
+interface WorkOrderScreenProps {
+  accessRole: MobileAccessRole;
+  user: AuthenticatedUser;
+}
+
+export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
   const [workOrders, setWorkOrders] = useState(initialWorkOrders);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [activeStep, setActiveStep] = useState<StepKey>(1);
+  const [showChiefMechanicOptions, setShowChiefMechanicOptions] = useState(false);
+
+  const chiefMechanicOptions = ["Ariel Santos", "Ramon Cruz", "Lorenzo Reyes"];
+  const currentUserName = user.name.trim().toLowerCase();
 
   const filteredOrders = workOrders.filter((order) => {
     const query = searchQuery.toLowerCase();
-    return (
+    const matchesQuery =
       order.number.toLowerCase().includes(query) ||
       order.plate.toLowerCase().includes(query) ||
       order.maintenanceType.toLowerCase().includes(query) ||
-      order.mechanic.toLowerCase().includes(query)
-    );
+      order.mechanic.toLowerCase().includes(query) ||
+      order.chiefMechanic.toLowerCase().includes(query);
+
+    if (accessRole === "mechanic") {
+      return matchesQuery && order.mechanic.toLowerCase() === currentUserName;
+    }
+
+    if (accessRole === "chiefMechanic") {
+      return (
+        matchesQuery &&
+        order.chiefMechanic.trim().toLowerCase() === currentUserName
+      );
+    }
+
+    return matchesQuery;
   });
 
   const selectedOrder =
@@ -382,12 +406,46 @@ export function WorkOrderScreen() {
   const openOrder = (orderId: string) => {
     setSelectedOrderId(orderId);
     setActiveStep(1);
+    setShowChiefMechanicOptions(false);
   };
+
+  const isMechanicRole = accessRole === "mechanic";
+  const isChiefMechanicRole = accessRole === "chiefMechanic";
+  const canViewExecutionChecklist = isMechanicRole;
+  const canViewInspectionChecklist = isChiefMechanicRole;
+
+  const visibleSteps = [
+    { step: 1, label: "Details" },
+    ...(canViewExecutionChecklist ? [{ step: 2, label: "Execution" }] : []),
+    ...(canViewInspectionChecklist
+      ? [
+          {
+            step: canViewExecutionChecklist ? 3 : 2,
+            label: "Inspection",
+          },
+        ]
+      : []),
+  ];
 
   const exportPDF = () => {
     if (selectedOrder) {
       Alert.alert("Export PDF", `Exporting ${selectedOrder.number} to PDF...`);
     }
+  };
+
+  const handleCompleteOrder = () => {
+    if (!selectedOrder) return;
+
+    if (isMechanicRole && !selectedOrder.chiefMechanic.trim()) {
+      Alert.alert(
+        "Chief Mechanic Required",
+        "Select an available chief mechanic before completing execution.",
+      );
+      return;
+    }
+
+    Alert.alert("Work Order Completed", `${selectedOrder.number} marked as complete`);
+    setSelectedOrderId(null);
   };
 
   const statusStyle = (status: WorkOrderStatus) => {
@@ -434,11 +492,7 @@ export function WorkOrderScreen() {
 
         {/* Step Bar */}
         <View style={styles.stepBar}>
-          {[
-            { step: 1, label: "Details" },
-            { step: 2, label: "Parts & Cost" },
-            { step: 3, label: "Inspection" },
-          ].map((item) => (
+          {visibleSteps.map((item) => (
             <TouchableOpacity
               key={item.step}
               style={[
@@ -481,151 +535,110 @@ export function WorkOrderScreen() {
                 </View>
               </View>
 
-              {/* Execution Checklist */}
-              <View style={styles.detailCard}>
-                <Text style={styles.sectionTitle}>Execution Checklist</Text>
-                <Text style={styles.sectionText}>
-                  Mechanics must select Checked, Changed, or Not Checked for
-                  each execution item before completing execution.
-                </Text>
-                {selectedOrder.executionItems.map((item) => (
-                  <View key={item.id} style={styles.checklistItemCard}>
-                    <Text style={styles.checklistItemLabel}>{item.label}</Text>
-                    <View style={styles.checklistItemStatus}>
-                      <Text style={styles.statusLabel}>
-                        NO PART CHANGE RECORDED
-                      </Text>
-                    </View>
-                    <View style={styles.pillButtonRow}>
-                      {[
-                        { key: "checked", label: "Checked", color: "#e0e7ff" },
-                        { key: "changed", label: "Changed", color: "#fef3c7" },
-                        {
-                          key: "notChecked",
-                          label: "Not Checked",
-                          color: "#f3f4f6",
-                        },
-                      ].map((option) => (
-                        <TouchableOpacity
-                          key={option.key}
-                          style={[
-                            styles.pillButton,
-                            item.status === option.key && {
-                              backgroundColor: "#1a1f6e",
-                            },
-                          ]}
-                          onPress={() =>
-                            updateExecutionStatus(
-                              selectedOrder.id,
-                              item.id,
-                              option.key as ExecutionItem["status"],
-                            )
-                          }
-                        >
-                          <Text
-                            style={[
-                              styles.pillButtonText,
-                              item.status === option.key &&
-                                styles.pillButtonTextActive,
-                            ]}
-                          >
-                            {option.label}
-                          </Text>
-                        </TouchableOpacity>
-                      ))}
-                    </View>
-                    <TextInput
-                      style={styles.noteInput}
-                      placeholder="Add note"
-                      placeholderTextColor="#94a3b8"
-                      value={item.note}
-                      onChangeText={(text) =>
-                        updateExecutionNote(selectedOrder.id, item.id, text)
-                      }
-                    />
-                  </View>
-                ))}
-
-                {/* Chief Mechanic */}
-                <View style={styles.chiefMechanicSection}>
-                  <Text style={styles.sectionTitle}>Chief Mechanic</Text>
-                  <TextInput
-                    style={styles.noteInput}
-                    placeholder="Chief Mechanic name"
-                    placeholderTextColor="#94a3b8"
-                    value={selectedOrder.chiefMechanic}
-                    onChangeText={(text) =>
-                      updateChiefMechanic(selectedOrder.id, text)
-                    }
-                  />
-                </View>
-              </View>
             </>
           )}
 
-          {/* Step 2: Parts Used, Cost, and Photos */}
-          {activeStep === 2 && (
+          {/* Step 2: Role-specific checklist */}
+          {activeStep === 2 && canViewExecutionChecklist && (
             <View style={styles.detailCard}>
-              <Text style={styles.sectionTitle}>
-                Parts Used, Cost, and Photos
-              </Text>
+              <Text style={styles.sectionTitle}>Execution Checklist</Text>
               <Text style={styles.sectionText}>
-                Labor, materials, uploads, and supporting documentation for this
-                work order.
+                Mechanics must select Checked, Changed, or Not Checked for each
+                execution item before completing execution.
               </Text>
-
-              {selectedOrder.partsUsedItems.map((item) => (
-                <View key={item.id} style={styles.partsItemCard}>
-                  <Text style={styles.partsItemTitle}>{item.label}</Text>
-
-                  <View>
-                    <Text style={styles.partsLabel}>Parts Used</Text>
-                    <TextInput
-                      style={styles.partsInput}
-                      placeholder="Enter parts used"
-                      placeholderTextColor="#94a3b8"
-                      value={item.partsUsed}
-                      editable={false}
-                    />
+              {selectedOrder.executionItems.map((item) => (
+                <View key={item.id} style={styles.checklistItemCard}>
+                  <Text style={styles.checklistItemLabel}>{item.label}</Text>
+                  <View style={styles.checklistItemStatus}>
+                    <Text style={styles.statusLabel}>NO PART CHANGE RECORDED</Text>
                   </View>
-
-                  <View>
-                    <Text style={styles.partsLabel}>Material Cost</Text>
-                    <TextInput
-                      style={styles.partsInput}
-                      placeholder="0.00"
-                      placeholderTextColor="#94a3b8"
-                      value={item.materialCost}
-                      editable={false}
-                      keyboardType="decimal-pad"
-                    />
+                  <View style={styles.pillButtonRow}>
+                    {[
+                      { key: "checked", label: "Checked", color: "#e0e7ff" },
+                      { key: "changed", label: "Changed", color: "#fef3c7" },
+                      {
+                        key: "notChecked",
+                        label: "Not Checked",
+                        color: "#f3f4f6",
+                      },
+                    ].map((option) => (
+                      <TouchableOpacity
+                        key={option.key}
+                        style={[
+                          styles.pillButton,
+                          item.status === option.key && {
+                            backgroundColor: "#1a1f6e",
+                          },
+                        ]}
+                        onPress={() =>
+                          updateExecutionStatus(
+                            selectedOrder.id,
+                            item.id,
+                            option.key as ExecutionItem["status"],
+                          )
+                        }
+                      >
+                        <Text
+                          style={[
+                            styles.pillButtonText,
+                            item.status === option.key &&
+                              styles.pillButtonTextActive,
+                          ]}
+                        >
+                          {option.label}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
                   </View>
-
-                  <TouchableOpacity style={styles.uploadButton}>
-                    <Text style={styles.uploadButtonText}>📎 Choose Files</Text>
-                  </TouchableOpacity>
-                  <Text style={styles.noFileText}>
-                    No supporting documentation uploaded.
-                  </Text>
+                  <TextInput
+                    style={styles.noteInput}
+                    placeholder="Add note"
+                    placeholderTextColor="#94a3b8"
+                    value={item.note}
+                    onChangeText={(text) =>
+                      updateExecutionNote(selectedOrder.id, item.id, text)
+                    }
+                  />
                 </View>
               ))}
 
-              {/* Cost Summary */}
-              <View style={styles.costSummaryRow}>
-                <View style={styles.costCard}>
-                  <Text style={styles.costLabel}>MATERIAL COST</Text>
-                  <Text style={styles.costValue}>₽0.00</Text>
-                </View>
-                <View style={styles.costCard}>
-                  <Text style={styles.costLabel}>TOTAL COST</Text>
-                  <Text style={styles.costValue}>₽0.00</Text>
+              <View style={styles.chiefMechanicSection}>
+                <Text style={styles.sectionTitle}>Chief Mechanic</Text>
+                <Text style={styles.sectionText}>
+                  Assign a chief mechanic before completing execution.
+                </Text>
+                <View style={styles.dropdownSection}>
+                  <Text style={styles.dropdownLabel}>Select Chief Mechanic</Text>
+                  <TouchableOpacity
+                    style={styles.dropdownButton}
+                    onPress={() => setShowChiefMechanicOptions((value) => !value)}
+                  >
+                    <Text style={styles.dropdownButtonText}>
+                      {selectedOrder.chiefMechanic || "Choose a chief mechanic"}
+                    </Text>
+                  </TouchableOpacity>
+                  {showChiefMechanicOptions && (
+                    <View style={styles.dropdownMenu}>
+                      {chiefMechanicOptions.map((option) => (
+                        <TouchableOpacity
+                          key={option}
+                          style={styles.dropdownOption}
+                          onPress={() => {
+                            updateChiefMechanic(selectedOrder.id, option);
+                            setShowChiefMechanicOptions(false);
+                          }}
+                        >
+                          <Text style={styles.dropdownOptionText}>{option}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  )}
                 </View>
               </View>
             </View>
           )}
 
-          {/* Step 3: Inspection Checklist */}
-          {activeStep === 3 && (
+          {(activeStep === 2 || activeStep === 3) && canViewInspectionChecklist && (!canViewExecutionChecklist || activeStep === 3) && (
             <View style={styles.detailCard}>
               <View style={styles.inspectionHeader}>
                 <Text style={styles.sectionTitle}>Inspection Checklist</Text>
@@ -749,21 +762,19 @@ export function WorkOrderScreen() {
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.bottomButtonPrimary}
-            onPress={() =>
-              setActiveStep((step) => (step < 3 ? ((step + 1) as StepKey) : 3))
-            }
+            onPress={() => {
+              const maxStep = visibleSteps[visibleSteps.length - 1].step as StepKey;
+              setActiveStep((step) =>
+                step < maxStep ? ((step + 1) as StepKey) : maxStep,
+              );
+            }}
           >
             <Text style={styles.bottomButtonPrimaryText}>Next</Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.bottomButtonPrimary}
-            onPress={() => {
-              Alert.alert(
-                "Work Order Completed",
-                `${selectedOrder.number} marked as complete`,
-              );
-              setSelectedOrderId(null);
-            }}
+            onPress={() => handleCompleteOrder()}
+            disabled={isMechanicRole && !selectedOrder.chiefMechanic.trim()}
           >
             <Text style={styles.bottomButtonPrimaryText}>Mark Complete</Text>
           </TouchableOpacity>
@@ -778,7 +789,9 @@ export function WorkOrderScreen() {
         <View style={styles.headerTextBlock}>
           <Text style={styles.title}>WORK ORDERS</Text>
           <Text style={styles.subtitle}>
-            Complete your assigned tasks and vehicle checklists
+            {isChiefMechanicRole
+              ? "Review and verify inspection checklists"
+              : "Complete your assigned execution checklist tasks"}
           </Text>
         </View>
       </View>
@@ -797,6 +810,16 @@ export function WorkOrderScreen() {
       </View>
 
       <ScrollView contentContainerStyle={styles.listContent}>
+        {filteredOrders.length === 0 ? (
+          <View style={styles.emptyStateCard}>
+            <Text style={styles.emptyStateTitle}>No assigned work orders</Text>
+            <Text style={styles.emptyStateText}>
+              {accessRole === "mechanic"
+                ? "No execution work orders are assigned to you right now."
+                : "No inspection work orders are assigned to you right now."}
+            </Text>
+          </View>
+        ) : null}
         {filteredOrders.map((order) => (
           <Pressable
             key={order.id}
@@ -930,6 +953,25 @@ const styles = StyleSheet.create({
     borderTopColor: "#e2e8f0",
     paddingTop: 8,
     marginTop: 4,
+  },
+  emptyStateCard: {
+    backgroundColor: "#ffffff",
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    padding: 20,
+    alignItems: "center",
+  },
+  emptyStateTitle: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#0d0d0d",
+    marginBottom: 6,
+  },
+  emptyStateText: {
+    color: "#64748b",
+    fontSize: 13,
+    textAlign: "center",
   },
   cardHint: { color: "#64748b", fontSize: 12 },
   cardArrow: { color: "#1a1f6e", fontSize: 22, fontWeight: "700" },
@@ -1089,6 +1131,46 @@ const styles = StyleSheet.create({
     paddingTop: 12,
     marginTop: 8,
     gap: 8,
+  },
+  dropdownSection: {
+    gap: 8,
+    paddingTop: 4,
+  },
+  dropdownLabel: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#64748b",
+    textTransform: "uppercase",
+  },
+  dropdownButton: {
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: "#ffffff",
+  },
+  dropdownButtonText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#0d0d0d",
+  },
+  dropdownMenu: {
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    borderRadius: 10,
+    backgroundColor: "#ffffff",
+    overflow: "hidden",
+  },
+  dropdownOption: {
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: "#e2e8f0",
+  },
+  dropdownOptionText: {
+    fontSize: 13,
+    color: "#0d0d0d",
   },
 
   /* Parts & Photos */

@@ -1,7 +1,10 @@
 import NetInfo, {
   type NetInfoSubscription,
 } from "@react-native-community/netinfo";
-import axios, { type AxiosInstance } from "axios";
+import axios, {
+  type AxiosInstance,
+  type AxiosRequestHeaders,
+} from "axios";
 
 import { initializeDatabase } from "../database/database";
 import type {
@@ -95,7 +98,10 @@ export class SyncService {
     this.api.interceptors.request.use(async (config) => {
       const token = await options.getAccessToken?.();
       if (token) {
-        config.headers.Authorization = `Bearer ${token}`;
+        if (!config.headers) {
+          config.headers = {} as AxiosRequestHeaders;
+        }
+        (config.headers as AxiosRequestHeaders).Authorization = `Bearer ${token}`;
       }
       return config;
     });

@@ -19,6 +19,24 @@ export interface AuthenticatedUser {
   roles: Array<{ role: string; system: string }>;
 }
 
+export type MobileAccessRole = 'mechanic' | 'chiefMechanic' | 'none';
+
+export function getMobileAccessRole(
+  roles: AuthenticatedUser['roles'] | undefined,
+): MobileAccessRole {
+  const normalizedRoles = (roles ?? []).map((role) => role.role.trim().toLowerCase());
+
+  if (normalizedRoles.some((value) => value.includes('chief'))) {
+    return 'chiefMechanic';
+  }
+
+  if (normalizedRoles.some((value) => value.includes('mechanic'))) {
+    return 'mechanic';
+  }
+
+  return 'none';
+}
+
 interface LoginResponse {
   accessToken: string;
   user: AuthenticatedUser;
@@ -44,6 +62,11 @@ export class AuthService {
       const { accessToken, user } = response.data;
       if (!accessToken || !isAuthenticatedUser(user)) {
         throw new Error('The backend returned an invalid login response');
+      }
+
+      if (getMobileAccessRole(user.roles) === 'none') {
+        await this.clearSession();
+        throw new Error('Only mechanics and chief mechanics can use this mobile version.');
       }
 
       await Promise.all([
@@ -78,11 +101,20 @@ export class AuthService {
       return null;
     }
 
+    if (getMobileAccessRole(storedUser.roles) === 'none') {
+      await this.clearSession();
+      return null;
+    }
+
     try {
       const response = await this.api.get<AuthenticatedUser>('/auth/me', {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!isAuthenticatedUser(response.data)) throw new Error('Invalid profile response');
+      if (getMobileAccessRole(response.data.roles) === 'none') {
+        await this.clearSession();
+        return null;
+      }
       await SecureStore.setItemAsync(USER_KEY, JSON.stringify(response.data));
       return response.data;
     } catch (error) {

@@ -19,6 +19,7 @@ import { WorkOrderScreen } from "./screens/WorkOrderScreen";
 import {
   API_BASE_URL,
   AuthService,
+  getMobileAccessRole,
   type AuthenticatedUser,
 } from "./services/AuthService";
 import { SyncService } from "./services/SyncService";
@@ -109,6 +110,20 @@ export default function App() {
       );
     }
 
+    const accessRole = getMobileAccessRole(user.roles);
+    if (accessRole === "none") {
+      return (
+        <View style={styles.centered}>
+          <Text style={styles.error}>
+            Only mechanics and chief mechanics can use this mobile version.
+          </Text>
+          <TouchableOpacity style={styles.logoutButton} onPress={() => void logout()}>
+            <Text style={styles.logoutButtonText}>Log out</Text>
+          </TouchableOpacity>
+        </View>
+      );
+    }
+
     return (
       <View style={styles.shell}>
         <View style={styles.header}>
@@ -116,7 +131,9 @@ export default function App() {
             <Image source={welinc} style={styles.logo} resizeMode="contain" />
             <View style={styles.headerTextBlock}>
               <Text style={styles.title}>VMMS</Text>
-              <Text style={styles.userName}>{user.name}</Text>
+              <Text style={styles.userName}>
+                {user.name} • {accessRole === "chiefMechanic" ? "Chief Mechanic" : "Mechanic"}
+              </Text>
             </View>
           </View>
 
@@ -171,7 +188,7 @@ export default function App() {
             onLogout={logout}
           />
         ) : (
-          <WorkOrderScreen />
+          <WorkOrderScreen accessRole={accessRole} user={user} />
         )}
       </View>
     );
