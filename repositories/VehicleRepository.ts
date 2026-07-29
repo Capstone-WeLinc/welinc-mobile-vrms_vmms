@@ -9,13 +9,17 @@ export class VehicleRepository {
     try {
       await this.db.runAsync(
         `INSERT INTO vehicles
-          (id, plateNumber, vehicleModel, status, odometerReading, updatedAt)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+          (id, plateNumber, model, capacity, status, odometer, isActive, deletedAt, createdAt, updatedAt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         vehicle.id,
         vehicle.plateNumber,
-        vehicle.vehicleModel,
+        vehicle.model,
+        vehicle.capacity,
         vehicle.status,
-        vehicle.odometerReading,
+        vehicle.odometer,
+        vehicle.isActive ? 1 : 0,
+        vehicle.deletedAt,
+        vehicle.createdAt,
         vehicle.updatedAt,
       );
     } catch (error) {
@@ -30,14 +34,23 @@ export class VehicleRepository {
   ): Promise<void> {
     const allowedColumns = [
       "plateNumber",
-      "vehicleModel",
+      "model",
+      "capacity",
       "status",
-      "odometerReading",
+      "odometer",
+      "isActive",
+      "deletedAt",
       "updatedAt",
     ] as const;
     const entries = allowedColumns
       .filter((column) => changes[column] !== undefined)
-      .map((column) => [column, changes[column]] as const);
+      .map((column) => {
+        const value = changes[column];
+        if (column === "isActive" && typeof value === "boolean") {
+          return [column, value ? 1 : 0] as const;
+        }
+        return [column, value] as const;
+      });
 
     if (entries.length === 0) return;
 
@@ -65,16 +78,48 @@ export class VehicleRepository {
   }
 
   async getVehicles(): Promise<Vehicle[]> {
-    return this.db.getAllAsync<Vehicle>(
-      "SELECT * FROM vehicles ORDER BY plateNumber ASC",
+    const rows = await this.db.getAllAsync<{
+      id: string;
+      plateNumber: string;
+      model: string;
+      capacity: number;
+      status: string;
+      odometer: number;
+      isActive: number;
+      deletedAt: string | null;
+      createdAt: string;
+      updatedAt: string;
+    }>(
+      "SELECT * FROM vehicles WHERE deletedAt IS NULL ORDER BY plateNumber ASC",
     );
+
+    return rows.map((row) => ({
+      ...row,
+      status: row.status as any,
+      isActive: row.isActive === 1,
+    }));
   }
 
   async getVehicleById(id: string): Promise<Vehicle | null> {
-    return this.db.getFirstAsync<Vehicle>(
-      "SELECT * FROM vehicles WHERE id = ?",
-      id,
-    );
+    const row = await this.db.getFirstAsync<{
+      id: string;
+      plateNumber: string;
+      model: string;
+      capacity: number;
+      status: string;
+      odometer: number;
+      isActive: number;
+      deletedAt: string | null;
+      createdAt: string;
+      updatedAt: string;
+    }>("SELECT * FROM vehicles WHERE id = ? AND deletedAt IS NULL", id);
+
+    if (!row) return null;
+    return {
+      ...row,
+      status: row.status as any,
+      isActive: row.isActive === 1,
+    };
   }
 
   async reconcileSnapshot(vehicles: Vehicle[]): Promise<void> {
@@ -85,37 +130,112 @@ export class VehicleRepository {
 
     try {
       for (const vehicle of vehicles) {
+        const existingVehicle = await this.db.getFirstAsync<{
+          id: string;
+          plateNumber: string;
+          model: string;
+          capacity: number;
+          status: string;
+          odometer: number;
+          isActive: number;
+          deletedAt: string | null;
+          createdAt: string;
+          updatedAt: string;
+        }>("SELECT * FROM vehicles WHERE plateNumber = ?", vehicle.plateNumber);
+
+        if (!existingVehicle) {
+          await this.upsertVehicle(vehicle);
+          await this.db.runAsync(
+            "INSERT OR IGNORE INTO incoming_vehicle_ids (id) VALUES (?)",
+            vehicle.id,
+          );
+          continue;
+        }
+
+        if (existingVehicle.id === vehicle.id) {
+          await this.upsertVehicle(vehicle);
+          await this.db.runAsync(
+            "INSERT OR IGNORE INTO incoming_vehicle_ids (id) VALUES (?)",
+            vehicle.id,
+          );
+          continue;
+        }
+
+        const hasNewerData =
+          vehicle.updatedAt > existingVehicle.updatedAt ||
+          (vehicle.updatedAt === existingVehicle.updatedAt &&
+            (vehicle.model !== existingVehicle.model ||
+              vehicle.status !== existingVehicle.status ||
+              vehicle.odometer !== existingVehicle.odometer));
+
+        if (!hasNewerData) {
+          await this.db.runAsync(
+            "INSERT OR IGNORE INTO incoming_vehicle_ids (id) VALUES (?)",
+            existingVehicle.id,
+          );
+          continue;
+        }
+
+        await this.db.runAsync(
+          `UPDATE vehicles
+           SET id = ?, plateNumber = ?, model = ?, capacity = ?, status = ?, odometer = ?, isActive = ?, deletedAt = ?, createdAt = ?, updatedAt = ?
+           WHERE id = ?`,
+          vehicle.id,
+          vehicle.plateNumber,
+          vehicle.model,
+          vehicle.capacity,
+          vehicle.status,
+          vehicle.odometer,
+          vehicle.isActive ? 1 : 0,
+          vehicle.deletedAt,
+          vehicle.createdAt,
+          vehicle.updatedAt,
+          existingVehicle.id,
+        );
+        await this.db.runAsync(
+          "UPDATE maintenance_schedules SET vehicleId = ? WHERE vehicleId = ?",
+          vehicle.id,
+          existingVehicle.id,
+        );
         await this.db.runAsync(
           "INSERT OR IGNORE INTO incoming_vehicle_ids (id) VALUES (?)",
           vehicle.id,
         );
-        await this.db.runAsync(
-          `INSERT INTO vehicles (id, plateNumber, vehicleModel, status, odometerReading, updatedAt)
-           VALUES (?, ?, ?, ?, ?, ?)
-           ON CONFLICT(id) DO UPDATE SET
-             plateNumber = excluded.plateNumber,
-             vehicleModel = excluded.vehicleModel,
-             status = excluded.status,
-             odometerReading = excluded.odometerReading,
-             updatedAt = excluded.updatedAt
-           WHERE excluded.updatedAt >= vehicles.updatedAt
-              OR excluded.plateNumber != vehicles.plateNumber
-              OR excluded.vehicleModel != vehicles.vehicleModel
-              OR excluded.status != vehicles.status
-              OR excluded.odometerReading != vehicles.odometerReading`,
-          vehicle.id,
-          vehicle.plateNumber,
-          vehicle.vehicleModel,
-          vehicle.status,
-          vehicle.odometerReading,
-          vehicle.updatedAt,
-        );
       }
+
       await this.db.runAsync(
         "DELETE FROM vehicles WHERE id NOT IN (SELECT id FROM incoming_vehicle_ids)",
       );
     } catch (error) {
+      console.error("[SQLite] Vehicle reconciliation failed", error);
       throw error;
     }
+  }
+
+  private async upsertVehicle(vehicle: Vehicle): Promise<void> {
+    await this.db.runAsync(
+      `INSERT INTO vehicles
+        (id, plateNumber, model, capacity, status, odometer, isActive, deletedAt, createdAt, updatedAt)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         plateNumber = excluded.plateNumber,
+         model = excluded.model,
+         capacity = excluded.capacity,
+         status = excluded.status,
+         odometer = excluded.odometer,
+         isActive = excluded.isActive,
+         deletedAt = excluded.deletedAt,
+         updatedAt = excluded.updatedAt`,
+      vehicle.id,
+      vehicle.plateNumber,
+      vehicle.model,
+      vehicle.capacity,
+      vehicle.status,
+      vehicle.odometer,
+      vehicle.isActive ? 1 : 0,
+      vehicle.deletedAt,
+      vehicle.createdAt,
+      vehicle.updatedAt,
+    );
   }
 }

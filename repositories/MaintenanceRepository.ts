@@ -11,16 +11,27 @@ export class MaintenanceRepository {
     try {
       await this.db.runAsync(
         `INSERT INTO maintenance_schedules
-          (id, vehicleId, title, triggerType, intervalType, status, assignedMechanic, dueDate, updatedAt)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          (id, vehicleId, title, garageId, status, assignedMechanic, accountType, checklistTemplateId, odometerReading, triggerType, intervalKm, bufferDistanceKm, startingReferenceReadingKm, intervalType, startReferenceDate, previousScheduleId, workOrderProgress, deletedAt, createdAt, updatedAt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         schedule.id,
         schedule.vehicleId,
         schedule.title,
-        schedule.triggerType,
-        schedule.intervalType,
+        schedule.garageId,
         schedule.status,
         schedule.assignedMechanic,
-        schedule.dueDate,
+        schedule.accountType,
+        schedule.checklistTemplateId,
+        schedule.odometerReading,
+        schedule.triggerType,
+        schedule.intervalKm,
+        schedule.bufferDistanceKm,
+        schedule.startingReferenceReadingKm,
+        schedule.intervalType,
+        schedule.startReferenceDate,
+        schedule.previousScheduleId,
+        schedule.workOrderProgress,
+        schedule.deletedAt,
+        schedule.createdAt,
         schedule.updatedAt,
       );
     } catch (error) {
@@ -38,12 +49,32 @@ export class MaintenanceRepository {
     if (vehicleId) {
       return this.db.getAllAsync<MaintenanceSchedule>(
         `SELECT * FROM maintenance_schedules
-         WHERE vehicleId = ? ORDER BY dueDate IS NULL, dueDate ASC`,
+         WHERE vehicleId = ? AND deletedAt IS NULL ORDER BY startReferenceDate IS NULL, startReferenceDate ASC`,
         vehicleId,
       );
     }
     return this.db.getAllAsync<MaintenanceSchedule>(
-      "SELECT * FROM maintenance_schedules ORDER BY dueDate IS NULL, dueDate ASC",
+      "SELECT * FROM maintenance_schedules WHERE deletedAt IS NULL ORDER BY startReferenceDate IS NULL, startReferenceDate ASC",
+    );
+  }
+
+  async getMaintenanceSchedulesByMechanic(
+    mechanicName: string,
+  ): Promise<MaintenanceSchedule[]> {
+    return this.db.getAllAsync<MaintenanceSchedule>(
+      `SELECT * FROM maintenance_schedules
+       WHERE assignedMechanic = ? AND deletedAt IS NULL ORDER BY startReferenceDate IS NULL, startReferenceDate ASC`,
+      mechanicName,
+    );
+  }
+
+  async getMaintenanceSchedulesByStatus(
+    status: string,
+  ): Promise<MaintenanceSchedule[]> {
+    return this.db.getAllAsync<MaintenanceSchedule>(
+      `SELECT * FROM maintenance_schedules
+       WHERE status = ? AND deletedAt IS NULL ORDER BY startReferenceDate IS NULL, startReferenceDate ASC`,
+      status,
     );
   }
 
@@ -61,33 +92,60 @@ export class MaintenanceRepository {
         );
         await this.db.runAsync(
           `INSERT INTO maintenance_schedules
-            (id, vehicleId, title, triggerType, intervalType, status, assignedMechanic, dueDate, updatedAt)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, vehicleId, title, garageId, status, assignedMechanic, accountType, checklistTemplateId, odometerReading, triggerType, intervalKm, bufferDistanceKm, startingReferenceReadingKm, intervalType, startReferenceDate, previousScheduleId, workOrderProgress, deletedAt, createdAt, updatedAt)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(id) DO UPDATE SET
              vehicleId = excluded.vehicleId,
              title = excluded.title,
-             triggerType = excluded.triggerType,
-             intervalType = excluded.intervalType,
+             garageId = excluded.garageId,
              status = excluded.status,
              assignedMechanic = excluded.assignedMechanic,
-             dueDate = excluded.dueDate,
+             accountType = excluded.accountType,
+             checklistTemplateId = excluded.checklistTemplateId,
+             odometerReading = excluded.odometerReading,
+             triggerType = excluded.triggerType,
+             intervalKm = excluded.intervalKm,
+             bufferDistanceKm = excluded.bufferDistanceKm,
+             startingReferenceReadingKm = excluded.startingReferenceReadingKm,
+             intervalType = excluded.intervalType,
+             startReferenceDate = excluded.startReferenceDate,
+             previousScheduleId = excluded.previousScheduleId,
+             workOrderProgress = excluded.workOrderProgress,
+             deletedAt = excluded.deletedAt,
              updatedAt = excluded.updatedAt
            WHERE excluded.updatedAt >= maintenance_schedules.updatedAt
-              OR excluded.vehicleId != maintenance_schedules.vehicleId
-              OR excluded.title != maintenance_schedules.title
-              OR excluded.status != maintenance_schedules.status
-              OR excluded.triggerType IS NOT maintenance_schedules.triggerType
-              OR excluded.intervalType IS NOT maintenance_schedules.intervalType
-              OR excluded.assignedMechanic IS NOT maintenance_schedules.assignedMechanic
-              OR excluded.dueDate IS NOT maintenance_schedules.dueDate`,
+              OR (
+                maintenance_schedules.intervalKm IS NULL AND excluded.intervalKm IS NOT NULL
+              ) OR (
+                maintenance_schedules.bufferDistanceKm IS NULL AND excluded.bufferDistanceKm IS NOT NULL
+              ) OR (
+                maintenance_schedules.startingReferenceReadingKm IS NULL AND excluded.startingReferenceReadingKm IS NOT NULL
+              ) OR (
+                maintenance_schedules.previousScheduleId IS NULL AND excluded.previousScheduleId IS NOT NULL
+              ) OR (
+                maintenance_schedules.workOrderProgress IS NULL AND excluded.workOrderProgress IS NOT NULL
+              ) OR (
+                maintenance_schedules.deletedAt IS NULL AND excluded.deletedAt IS NOT NULL
+              )`,
           schedule.id,
           schedule.vehicleId,
           schedule.title,
-          schedule.triggerType,
-          schedule.intervalType,
+          schedule.garageId,
           schedule.status,
           schedule.assignedMechanic,
-          schedule.dueDate,
+          schedule.accountType,
+          schedule.checklistTemplateId,
+          schedule.odometerReading,
+          schedule.triggerType,
+          schedule.intervalKm,
+          schedule.bufferDistanceKm,
+          schedule.startingReferenceReadingKm,
+          schedule.intervalType,
+          schedule.startReferenceDate,
+          schedule.previousScheduleId,
+          schedule.workOrderProgress,
+          schedule.deletedAt,
+          schedule.createdAt,
           schedule.updatedAt,
         );
       }
@@ -95,6 +153,10 @@ export class MaintenanceRepository {
         "DELETE FROM maintenance_schedules WHERE id NOT IN (SELECT id FROM incoming_schedule_ids)",
       );
     } catch (error) {
+      console.error(
+        "[SQLite] Maintenance schedule reconciliation failed",
+        error,
+      );
       throw error;
     }
   }

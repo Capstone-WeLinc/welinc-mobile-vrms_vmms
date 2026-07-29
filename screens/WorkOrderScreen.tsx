@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   Pressable,
   ScrollView,
@@ -9,11 +9,20 @@ import {
   View,
   Alert,
 } from "react-native";
+import * as ImagePicker from "expo-image-picker";
+import * as DocumentPicker from "expo-document-picker";
 
-import type { AuthenticatedUser, MobileAccessRole } from "../services/AuthService";
+import type {
+  AuthenticatedUser,
+  MobileAccessRole,
+} from "../services/AuthService";
+import { getDatabase } from "../database/database";
+import { ChecklistRepository } from "../repositories/ChecklistRepository";
+import { MaintenanceRepository } from "../repositories/MaintenanceRepository";
+import type { ChecklistItem, MaintenanceSchedule } from "../database/tables";
 
 type WorkOrderStatus = "Pending" | "In Progress" | "Overdue" | "Completed";
-type StepKey = 1 | 2 | 3;
+type StepKey = "details" | "execution" | "parts";
 
 type ExecutionItem = {
   id: string;
@@ -41,6 +50,21 @@ type ScheduleDetail = {
   value: string;
 };
 
+type AttachmentItem = {
+  id: string;
+  name: string;
+  sizeMb: number;
+};
+
+type PartDetailEntry = {
+  partsUsed: string;
+  quantity: string;
+  materialCost: string;
+  attachments: AttachmentItem[];
+  attachmentName: string;
+  attachmentSizeMb: string;
+};
+
 type WorkOrder = {
   id: string;
   number: string;
@@ -52,9 +76,11 @@ type WorkOrder = {
   summary: string;
   details: string[];
   template: string;
+  checklistTemplateId: string | null;
   scheduleDetails: ScheduleDetail[];
   executionItems: ExecutionItem[];
   partsUsedItems: PartsUsedItem[];
+  partDetails: Record<string, PartDetailEntry>;
   inspectionItems: InspectionItem[];
   chiefMechanic: string;
   inspectorRemarks: string;
@@ -62,207 +88,169 @@ type WorkOrder = {
   approvalStatus: "Pending verification" | "Approved" | "Rejected";
 };
 
-const initialWorkOrders: WorkOrder[] = [
-  {
-    id: "1",
-    number: "WO-B7A8E877",
-    plate: "LVR 8146",
-    maintenanceType: "General Inspection",
-    mechanic: "Danilo Sebastian",
-    dateCreated: "2026-07-04",
-    status: "Pending",
-    summary: "General vehicle inspection and maintenance schedule review.",
-    details: [
-      "Vehicle: LVR 8146",
-      "Garage: Pulilan",
-      "Service Window: 09:00 - 12:00",
-      "Priority: Medium",
-    ],
-    template: "General Inspection",
-    scheduleDetails: [
-      { label: "WORK ORDER NO.", value: "WO-B7A8E877" },
-      { label: "ACCOUNT TYPE", value: "IN_HOUSE" },
-      { label: "VEHICLE", value: "LVR 8146" },
-      { label: "ODOMETER READING (KM)", value: "164700" },
-      { label: "CHECKLIST TEMPLATE", value: "General Inspection" },
-      { label: "SCHEDULE TRIGGER", value: "Time" },
-      { label: "ASSIGNED MECHANIC", value: "Danilo Sebastian" },
-      { label: "INTERVAL TYPE", value: "MONTHLY" },
-      { label: "DATE CREATED", value: "2026-07-04" },
-      { label: "START REFERENCE DATE", value: "2026-08-06" },
-    ],
-    executionItems: [
-      {
-        id: "e1",
-        label: "Check all fluid levels",
-        status: "pending",
-        note: "",
-      },
-      {
-        id: "e2",
-        label: "Inspect underchassis for leaks or damage",
-        status: "pending",
-        note: "",
-      },
-      {
-        id: "e3",
-        label: "Test exterior and interior lights",
-        status: "pending",
-        note: "",
-      },
-      {
-        id: "e4",
-        label: "Inspect wiper blades and mirrors",
-        status: "pending",
-        note: "",
-      },
-      {
-        id: "e5",
-        label: "Confirm tools, jack, and safety kit are complete",
-        status: "pending",
-        note: "",
-      },
-    ],
-    partsUsedItems: [
-      {
-        id: "p1",
-        label: "Check all fluid levels",
-        partsUsed: "Not applicable",
-        materialCost: "0.00",
-      },
-      {
-        id: "p2",
-        label: "Inspect underchassis for leaks or damage",
-        partsUsed: "Not applicable",
-        materialCost: "0.00",
-      },
-      {
-        id: "p3",
-        label: "Test exterior and interior lights",
-        partsUsed: "Not applicable",
-        materialCost: "0.00",
-      },
-      {
-        id: "p4",
-        label: "Inspect wiper blades and mirrors",
-        partsUsed: "Not applicable",
-        materialCost: "0.00",
-      },
-      {
-        id: "p5",
-        label: "Confirm tools, jack, and safety kit are complete",
-        partsUsed: "Not applicable",
-        materialCost: "0.00",
-      },
-    ],
-    inspectionItems: [
-      {
-        id: "i1",
-        label: "Check all fluid levels",
-        status: "pending",
-        note: "",
-      },
-      {
-        id: "i2",
-        label: "Inspect underchassis for leaks or damage",
-        status: "pending",
-        note: "",
-      },
-      {
-        id: "i3",
-        label: "Test exterior and interior lights",
-        status: "pending",
-        note: "",
-      },
-      {
-        id: "i4",
-        label: "Inspect wiper blades and mirrors",
-        status: "pending",
-        note: "",
-      },
-      {
-        id: "i5",
-        label: "Confirm tools, jack, and safety kit are complete",
-        status: "pending",
-        note: "",
-      },
-    ],
-    chiefMechanic: "",
-    inspectorRemarks: "",
-    inspectionResultsPending: 5,
-    approvalStatus: "Pending verification",
-  },
-  {
-    id: "2",
-    number: "WO-D6D46868",
-    plate: "TGD 908",
-    maintenanceType: "General Inspection",
-    mechanic: "Generoso Ramos",
-    dateCreated: "2026-07-04",
-    status: "In Progress",
-    summary: "Vehicle inspection for maintenance compliance.",
-    details: [
-      "Vehicle: TGD 908",
-      "Garage: Manila",
-      "Service Window: 13:00 - 15:00",
-      "Priority: Medium",
-    ],
-    template: "General Inspection",
-    scheduleDetails: [
-      { label: "WORK ORDER NO.", value: "WO-D6D46868" },
-      { label: "ACCOUNT TYPE", value: "IN_HOUSE" },
-      { label: "VEHICLE", value: "TGD 908" },
-      { label: "ODOMETER READING (KM)", value: "145200" },
-      { label: "CHECKLIST TEMPLATE", value: "General Inspection" },
-      { label: "SCHEDULE TRIGGER", value: "Time" },
-      { label: "ASSIGNED MECHANIC", value: "Generoso Ramos" },
-      { label: "INTERVAL TYPE", value: "MONTHLY" },
-      { label: "DATE CREATED", value: "2026-07-04" },
-      { label: "START REFERENCE DATE", value: "2026-08-06" },
-    ],
-    executionItems: [
-      {
-        id: "e6",
-        label: "Check all fluid levels",
-        status: "checked",
-        note: "Completed",
-      },
-      {
-        id: "e7",
-        label: "Inspect underchassis for leaks or damage",
-        status: "pending",
-        note: "",
-      },
-    ],
-    partsUsedItems: [
-      {
-        id: "p6",
-        label: "Check all fluid levels",
-        partsUsed: "Not applicable",
-        materialCost: "0.00",
-      },
-      {
-        id: "p7",
-        label: "Inspect underchassis for leaks or damage",
-        partsUsed: "Not applicable",
-        materialCost: "0.00",
-      },
-    ],
-    inspectionItems: [
-      {
-        id: "i6",
-        label: "Fluid level check",
-        status: "pass",
-        note: "All levels OK",
-      },
-      { id: "i7", label: "Body condition", status: "pending", note: "" },
-    ],
-    chiefMechanic: "",
-    inspectorRemarks: "",
-    inspectionResultsPending: 1,
-    approvalStatus: "Pending verification",
-  },
-];
+const formatReadableDate = (value: string | null | undefined): string => {
+  if (!value) return "N/A";
+
+  const parsedDate = new Date(value);
+  if (Number.isNaN(parsedDate.getTime())) {
+    return value;
+  }
+
+  return parsedDate.toLocaleDateString("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+};
+
+const formatWorkOrderNumber = (value: string | null | undefined): string => {
+  if (!value) return "N/A";
+
+  const alphanumeric = value.match(/[A-Za-z0-9]/g)?.join("") ?? "";
+  const compactValue = alphanumeric.slice(0, 8).toUpperCase();
+
+  return compactValue ? `WO-${compactValue}` : "N/A";
+};
+
+const formatDisplayValue = (
+  value: string | number | null | undefined,
+  field: "date" | "text" = "text",
+): string => {
+  if (value === null || value === undefined || value === "") {
+    return "N/A";
+  }
+
+  if (field === "date") {
+    return formatReadableDate(String(value));
+  }
+
+  if (typeof value === "number") {
+    return String(value);
+  }
+
+  return String(value);
+};
+
+const formatScheduleField = (
+  field: keyof Pick<
+    MaintenanceSchedule,
+    | "id"
+    | "vehicleId"
+    | "title"
+    | "createdAt"
+    | "accountType"
+    | "odometerReading"
+    | "triggerType"
+    | "intervalKm"
+    | "bufferDistanceKm"
+    | "startingReferenceReadingKm"
+    | "startReferenceDate"
+  >,
+  value: MaintenanceSchedule[keyof MaintenanceSchedule],
+): string => {
+  if (field === "createdAt" || field === "startReferenceDate") {
+    return formatDisplayValue(value as string | null | undefined, "date");
+  }
+
+  if (field === "accountType") {
+    const accountTypeValue = value as string | null | undefined;
+    if (!accountTypeValue) return "N/A";
+    if (accountTypeValue === "IN_HOUSE") return "In House";
+    if (accountTypeValue === "OUTSOURCED") return "Outsourced";
+    return String(accountTypeValue);
+  }
+
+  if (field === "triggerType") {
+    const triggerValue = value as string | null | undefined;
+    if (!triggerValue) return "N/A";
+    if (triggerValue === "MANUAL") return "Manual";
+    if (triggerValue === "ODOMETER") return "Odometer";
+    if (triggerValue === "TIME") return "Time";
+    return String(triggerValue);
+  }
+
+  if (value === null || value === undefined || value === "") {
+    return "N/A";
+  }
+
+  return String(value);
+};
+
+const createDefaultPartDetailEntry = (): PartDetailEntry => ({
+  partsUsed: "",
+  quantity: "",
+  materialCost: "",
+  attachments: [],
+  attachmentName: "",
+  attachmentSizeMb: "",
+});
+
+const buildExecutionItems = (
+  templateItems: ChecklistItem[],
+): ExecutionItem[] => {
+  if (templateItems.length === 0) {
+    return [];
+  }
+
+  return templateItems
+    .slice()
+    .sort((left, right) => (left.order ?? 0) - (right.order ?? 0))
+    .map((item) => ({
+      id: item.id,
+      label: item.text,
+      status: "pending",
+      note: "",
+    }));
+};
+
+const resolveChecklistTemplate = async (
+  checklistRepo: ChecklistRepository,
+  templateId: string | null,
+  fallbackName: string | null,
+): Promise<{
+  templateId: string | null;
+  templateName: string;
+  templateItems: ChecklistItem[];
+}> => {
+  const trimmedTemplateId = templateId?.trim() || null;
+
+  if (trimmedTemplateId) {
+    const checklistTemplate =
+      await checklistRepo.getTemplateById(trimmedTemplateId);
+
+    if (checklistTemplate) {
+      return {
+        templateId: trimmedTemplateId,
+        templateName: checklistTemplate.type,
+        templateItems:
+          await checklistRepo.getItemsByTemplateId(trimmedTemplateId),
+      };
+    }
+  }
+
+  const trimmedFallbackName = fallbackName?.trim() || null;
+
+  if (trimmedFallbackName) {
+    const checklistTemplate =
+      await checklistRepo.getTemplateByType(trimmedFallbackName);
+
+    if (checklistTemplate) {
+      return {
+        templateId: checklistTemplate.id,
+        templateName: checklistTemplate.type,
+        templateItems: await checklistRepo.getItemsByTemplateId(
+          checklistTemplate.id,
+        ),
+      };
+    }
+  }
+
+  return {
+    templateId: null,
+    templateName: "No checklist template",
+    templateItems: [],
+  };
+};
 
 interface WorkOrderScreenProps {
   accessRole: MobileAccessRole;
@@ -270,14 +258,241 @@ interface WorkOrderScreenProps {
 }
 
 export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
-  const [workOrders, setWorkOrders] = useState(initialWorkOrders);
+  const [workOrders, setWorkOrders] = useState<WorkOrder[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
-  const [activeStep, setActiveStep] = useState<StepKey>(1);
-  const [showChiefMechanicOptions, setShowChiefMechanicOptions] = useState(false);
+  const [activeStep, setActiveStep] = useState<StepKey>("details");
+  const [showChiefMechanicOptions, setShowChiefMechanicOptions] =
+    useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+
+    async function loadWorkOrders(): Promise<void> {
+      try {
+        const db = await getDatabase();
+        const maintenanceRepo = new MaintenanceRepository(db);
+        const checklistRepo = new ChecklistRepository(db);
+        const schedules = await maintenanceRepo.getMaintenanceSchedules();
+
+        if (!mounted) return;
+
+        const converted: WorkOrder[] = await Promise.all(
+          schedules.map(async (schedule) => {
+            const resolvedTemplate = await resolveChecklistTemplate(
+              checklistRepo,
+              schedule.checklistTemplateId,
+              schedule.title,
+            );
+
+            const executionItems: ExecutionItem[] = buildExecutionItems(
+              resolvedTemplate.templateItems,
+            );
+
+            const partDetails = executionItems.reduce<
+              Record<string, PartDetailEntry>
+            >(
+              (accumulator, item) => ({
+                ...accumulator,
+                [item.id]: createDefaultPartDetailEntry(),
+              }),
+              {},
+            );
+
+            return {
+              id: schedule.id,
+              number: formatWorkOrderNumber(schedule.id),
+              plate: "", // Would need vehicle lookup to populate
+              maintenanceType: schedule.title,
+              mechanic: schedule.assignedMechanic || "Unassigned",
+              dateCreated: formatReadableDate(schedule.createdAt),
+              status:
+                schedule.status === "PENDING"
+                  ? "Pending"
+                  : schedule.status === "DUE"
+                    ? "Pending"
+                    : schedule.status === "IN_PROGRESS"
+                      ? "In Progress"
+                      : schedule.status === "COMPLETED"
+                        ? "Completed"
+                        : "Overdue",
+              summary: `${schedule.title} - ${schedule.intervalType || "As needed"}`,
+              details: [],
+              template: resolvedTemplate.templateName,
+              checklistTemplateId: resolvedTemplate.templateId,
+              scheduleDetails: [
+                {
+                  label: "Work Order No.",
+                  value: formatWorkOrderNumber(schedule.id),
+                },
+                {
+                  label: "Vehicle",
+                  value: formatScheduleField("vehicleId", schedule.vehicleId),
+                },
+                {
+                  label: "Checklist Template",
+                  value: resolvedTemplate.templateName,
+                },
+                {
+                  label: "Date Created",
+                  value: formatScheduleField("createdAt", schedule.createdAt),
+                },
+                {
+                  label: "Account Type",
+                  value: formatScheduleField(
+                    "accountType",
+                    schedule.accountType,
+                  ),
+                },
+                {
+                  label: "Odometer Reading (km)",
+                  value: formatScheduleField(
+                    "odometerReading",
+                    schedule.odometerReading,
+                  ),
+                },
+                {
+                  label: "Schedule Trigger",
+                  value: formatScheduleField(
+                    "triggerType",
+                    schedule.triggerType,
+                  ),
+                },
+                {
+                  label: "Interval (km)",
+                  value: formatScheduleField("intervalKm", schedule.intervalKm),
+                },
+                {
+                  label: "Buffer Distance (km)",
+                  value: formatScheduleField(
+                    "bufferDistanceKm",
+                    schedule.bufferDistanceKm,
+                  ),
+                },
+                {
+                  label: "Starting Reference Reading (km)",
+                  value: formatScheduleField(
+                    "startingReferenceReadingKm",
+                    schedule.startingReferenceReadingKm,
+                  ),
+                },
+                {
+                  label: "Start Reference Date",
+                  value: formatScheduleField(
+                    "startReferenceDate",
+                    schedule.startReferenceDate,
+                  ),
+                },
+              ],
+              executionItems,
+              partsUsedItems: [
+                {
+                  id: "p1",
+                  label: schedule.title,
+                  partsUsed: "Not applicable",
+                  materialCost: "0.00",
+                },
+              ],
+              partDetails,
+              inspectionItems: [],
+              chiefMechanic: "",
+              inspectorRemarks: "",
+              inspectionResultsPending: 0,
+              approvalStatus: "Pending verification",
+            };
+          }),
+        );
+
+        setWorkOrders(converted);
+      } catch (error) {
+        console.error("[WorkOrderScreen] Failed to load work orders", error);
+      } finally {
+        setIsLoading(false);
+      }
+    }
+
+    loadWorkOrders();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!selectedOrderId) {
+      return;
+    }
+
+    let mounted = true;
+
+    async function loadExecutionItemsForSelectedOrder(): Promise<void> {
+      try {
+        const db = await getDatabase();
+        const checklistRepo = new ChecklistRepository(db);
+        const currentOrder = workOrders.find(
+          (order) => order.id === selectedOrderId,
+        );
+
+        if (!currentOrder) {
+          return;
+        }
+
+        const resolvedTemplate = await resolveChecklistTemplate(
+          checklistRepo,
+          currentOrder.checklistTemplateId,
+          currentOrder.maintenanceType,
+        );
+
+        if (!mounted) {
+          return;
+        }
+
+        const executionItems = buildExecutionItems(
+          resolvedTemplate.templateItems,
+        );
+
+        setWorkOrders((current) =>
+          current.map((order) => {
+            if (order.id !== selectedOrderId) {
+              return order;
+            }
+
+            const partDetails = executionItems.reduce<
+              Record<string, PartDetailEntry>
+            >(
+              (accumulator, item) => ({
+                ...accumulator,
+                [item.id]:
+                  order.partDetails[item.id] ?? createDefaultPartDetailEntry(),
+              }),
+              {},
+            );
+
+            return {
+              ...order,
+              executionItems,
+              partDetails,
+            };
+          }),
+        );
+      } catch (error) {
+        console.error(
+          "[WorkOrderScreen] Failed to load checklist items for selected work order",
+          error,
+        );
+      }
+    }
+
+    loadExecutionItemsForSelectedOrder();
+
+    return () => {
+      mounted = false;
+    };
+  }, [selectedOrderId]);
 
   const chiefMechanicOptions = ["Ariel Santos", "Ramon Cruz", "Lorenzo Reyes"];
   const currentUserName = user.name.trim().toLowerCase();
+  const currentUserDisplayName = user.name.trim();
 
   const filteredOrders = workOrders.filter((order) => {
     const query = searchQuery.toLowerCase();
@@ -304,6 +519,19 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
 
   const selectedOrder =
     workOrders.find((order) => order.id === selectedOrderId) ?? null;
+
+  const groupedOrders = filteredOrders.reduce<Record<string, WorkOrder[]>>(
+    (groups, order) => {
+      const mechanicKey = order.mechanic.trim() || "Unassigned";
+      groups[mechanicKey] = [...(groups[mechanicKey] ?? []), order];
+      return groups;
+    },
+    {},
+  );
+
+  const groupedOrderEntries = Object.entries(groupedOrders).sort(
+    ([leftName], [rightName]) => leftName.localeCompare(rightName),
+  );
 
   const updateExecutionStatus = (
     orderId: string,
@@ -338,6 +566,14 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
           ),
         };
       }),
+    );
+  };
+
+  const updateChiefMechanic = (orderId: string, name: string) => {
+    setWorkOrders((current) =>
+      current.map((order) =>
+        order.id === orderId ? { ...order, chiefMechanic: name } : order,
+      ),
     );
   };
 
@@ -377,14 +613,6 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
     );
   };
 
-  const updateChiefMechanic = (orderId: string, name: string) => {
-    setWorkOrders((current) =>
-      current.map((order) =>
-        order.id === orderId ? { ...order, chiefMechanic: name } : order,
-      ),
-    );
-  };
-
   const updateInspectorRemarks = (orderId: string, remarks: string) => {
     setWorkOrders((current) =>
       current.map((order) =>
@@ -393,38 +621,252 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
     );
   };
 
+  const updatePartDetailField = (
+    orderId: string,
+    itemId: string,
+    field: keyof PartDetailEntry,
+    value: string,
+  ) => {
+    setWorkOrders((current) =>
+      current.map((order) => {
+        if (order.id !== orderId) return order;
+        return {
+          ...order,
+          partDetails: {
+            ...order.partDetails,
+            [itemId]: {
+              ...order.partDetails[itemId],
+              [field]: value,
+            },
+          },
+        };
+      }),
+    );
+  };
+
+  const addAttachmentToItem = async (orderId: string, itemId: string) => {
+    const order = workOrders.find((item) => item.id === orderId);
+    if (!order) return;
+
+    const currentEntry = order.partDetails[itemId] ?? {
+      partsUsed: "",
+      quantity: "",
+      materialCost: "",
+      attachments: [],
+      attachmentName: "",
+      attachmentSizeMb: "",
+    };
+
+    if (currentEntry.attachments.length >= 5) {
+      Alert.alert(
+        "Attachment limit reached",
+        "You can add up to 5 attachments per item.",
+      );
+      return;
+    }
+
+    const pickMedia = async () => {
+      const permissionResult =
+        await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permissionResult.granted) {
+        Alert.alert(
+          "Permission needed",
+          "Please allow access to your photos to attach media.",
+        );
+        return null;
+      }
+
+      return ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.All,
+        allowsEditing: false,
+        quality: 0.8,
+      });
+    };
+
+    const takePhoto = async () => {
+      const permissionResult =
+        await ImagePicker.requestCameraPermissionsAsync();
+      if (!permissionResult.granted) {
+        Alert.alert(
+          "Permission needed",
+          "Please allow access to your camera to take a photo.",
+        );
+        return null;
+      }
+
+      return ImagePicker.launchCameraAsync({
+        allowsEditing: false,
+        quality: 0.8,
+      });
+    };
+
+    const pickFile = async () => {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: ["image/*", "application/pdf", "text/plain"],
+        copyToCacheDirectory: true,
+      });
+
+      if ("canceled" in result && result.canceled) {
+        return null;
+      }
+
+      return result;
+    };
+
+    Alert.alert("Add attachment", "Choose how you want to add the attachment", [
+      {
+        text: "Gallery",
+        onPress: async () => {
+          const result = await pickMedia();
+          if (!result || result.canceled) return;
+          const asset = result.assets?.[0];
+          if (!asset) return;
+          const fileSizeMb = (asset.fileSize ?? 0) / (1024 * 1024);
+          if (fileSizeMb > 5) {
+            Alert.alert(
+              "Maximum size exceeded",
+              "Each attachment must be 5 MB or less.",
+            );
+            return;
+          }
+          setWorkOrders((current) =>
+            current.map((existingOrder) => {
+              if (existingOrder.id !== orderId) return existingOrder;
+              return {
+                ...existingOrder,
+                partDetails: {
+                  ...existingOrder.partDetails,
+                  [itemId]: {
+                    ...existingOrder.partDetails[itemId],
+                    attachments: [
+                      ...(existingOrder.partDetails[itemId]?.attachments ?? []),
+                      {
+                        id: `${itemId}-${Date.now()}`,
+                        name: asset.fileName ?? "Gallery attachment",
+                        sizeMb: Number(fileSizeMb.toFixed(2)),
+                      },
+                    ],
+                    attachmentName: "",
+                    attachmentSizeMb: "",
+                  },
+                },
+              };
+            }),
+          );
+        },
+      },
+      {
+        text: "Take Photo",
+        onPress: async () => {
+          const result = await takePhoto();
+          if (!result || result.canceled) return;
+          const asset = result.assets?.[0];
+          if (!asset) return;
+          const fileSizeMb = (asset.fileSize ?? 0) / (1024 * 1024);
+          if (fileSizeMb > 5) {
+            Alert.alert(
+              "Maximum size exceeded",
+              "Each attachment must be 5 MB or less.",
+            );
+            return;
+          }
+          setWorkOrders((current) =>
+            current.map((existingOrder) => {
+              if (existingOrder.id !== orderId) return existingOrder;
+              return {
+                ...existingOrder,
+                partDetails: {
+                  ...existingOrder.partDetails,
+                  [itemId]: {
+                    ...existingOrder.partDetails[itemId],
+                    attachments: [
+                      ...(existingOrder.partDetails[itemId]?.attachments ?? []),
+                      {
+                        id: `${itemId}-${Date.now()}`,
+                        name: asset.fileName ?? "Camera photo",
+                        sizeMb: Number(fileSizeMb.toFixed(2)),
+                      },
+                    ],
+                    attachmentName: "",
+                    attachmentSizeMb: "",
+                  },
+                },
+              };
+            }),
+          );
+        },
+      },
+      {
+        text: "Files",
+        onPress: async () => {
+          const result = await pickFile();
+          if (!result) return;
+          const fileSizeMb = (result.assets?.[0]?.size ?? 0) / (1024 * 1024);
+          if (fileSizeMb > 5) {
+            Alert.alert(
+              "Maximum size exceeded",
+              "Each attachment must be 5 MB or less.",
+            );
+            return;
+          }
+          setWorkOrders((current) =>
+            current.map((existingOrder) => {
+              if (existingOrder.id !== orderId) return existingOrder;
+              return {
+                ...existingOrder,
+                partDetails: {
+                  ...existingOrder.partDetails,
+                  [itemId]: {
+                    ...existingOrder.partDetails[itemId],
+                    attachments: [
+                      ...(existingOrder.partDetails[itemId]?.attachments ?? []),
+                      {
+                        id: `${itemId}-${Date.now()}`,
+                        name: result.assets?.[0]?.name ?? "File attachment",
+                        sizeMb: Number(fileSizeMb.toFixed(2)),
+                      },
+                    ],
+                    attachmentName: "",
+                    attachmentSizeMb: "",
+                  },
+                },
+              };
+            }),
+          );
+        },
+      },
+      { text: "Cancel", style: "cancel" },
+    ]);
+  };
+
   const calculateMaterialCost = (orderId: string): string => {
     const order = workOrders.find((o) => o.id === orderId);
     if (!order) return "0.00";
-    const total = order.partsUsedItems.reduce((sum, item) => {
-      const cost = parseFloat(item.materialCost) || 0;
-      return sum + cost;
+
+    const total = order.executionItems.reduce((sum, item) => {
+      if (item.status !== "changed") return sum;
+
+      const cost = Number.parseFloat(
+        order.partDetails[item.id]?.materialCost || "0",
+      );
+      return sum + (Number.isNaN(cost) ? 0 : cost);
     }, 0);
+
     return total.toFixed(2);
   };
 
   const openOrder = (orderId: string) => {
     setSelectedOrderId(orderId);
-    setActiveStep(1);
+    setActiveStep("details");
     setShowChiefMechanicOptions(false);
   };
 
   const isMechanicRole = accessRole === "mechanic";
   const isChiefMechanicRole = accessRole === "chiefMechanic";
-  const canViewExecutionChecklist = isMechanicRole;
-  const canViewInspectionChecklist = isChiefMechanicRole;
-
   const visibleSteps = [
-    { step: 1, label: "Details" },
-    ...(canViewExecutionChecklist ? [{ step: 2, label: "Execution" }] : []),
-    ...(canViewInspectionChecklist
-      ? [
-          {
-            step: canViewExecutionChecklist ? 3 : 2,
-            label: "Inspection",
-          },
-        ]
-      : []),
+    { key: "details" as StepKey, label: "Details" },
+    { key: "execution" as StepKey, label: "Execution" },
+    { key: "parts" as StepKey, label: "Parts, Cost & Photos" },
   ];
 
   const exportPDF = () => {
@@ -436,15 +878,62 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
   const handleCompleteOrder = () => {
     if (!selectedOrder) return;
 
-    if (isMechanicRole && !selectedOrder.chiefMechanic.trim()) {
+    const hasExecutionStatuses =
+      selectedOrder.executionItems.length > 0 &&
+      selectedOrder.executionItems.every((item) => item.status !== "pending");
+
+    const changedExecutionItems = selectedOrder.executionItems.filter(
+      (item) => item.status === "changed",
+    );
+
+    const hasRequiredPartsDetails = changedExecutionItems.every((item) => {
+      const partEntry = selectedOrder.partDetails[item.id] ?? {
+        partsUsed: "",
+        quantity: "",
+        materialCost: "",
+        attachments: [],
+        attachmentName: "",
+        attachmentSizeMb: "",
+      };
+
+      return (
+        partEntry.partsUsed.trim().length > 0 &&
+        partEntry.quantity.trim().length > 0 &&
+        partEntry.materialCost.trim().length > 0 &&
+        partEntry.attachments.length > 0
+      );
+    });
+
+    const hasChiefMechanic = selectedOrder.chiefMechanic.trim().length > 0;
+
+    if (!hasExecutionStatuses) {
       Alert.alert(
-        "Chief Mechanic Required",
-        "Select an available chief mechanic before completing execution.",
+        "Execution Incomplete",
+        "Mark every checklist item as Checked, Changed, or Not Checked before completing the order.",
       );
       return;
     }
 
-    Alert.alert("Work Order Completed", `${selectedOrder.number} marked as complete`);
+    if (changedExecutionItems.length > 0 && !hasRequiredPartsDetails) {
+      Alert.alert(
+        "Parts, Cost & Photo Details Required",
+        "Fill in the required Parts, Cost, and Photo details for every Changed item before completing the order.",
+      );
+      return;
+    }
+
+    if (!hasChiefMechanic) {
+      Alert.alert(
+        "Chief Mechanic Required",
+        "Select a chief mechanic before completing the order.",
+      );
+      return;
+    }
+
+    Alert.alert(
+      "Work Order Completed",
+      `${selectedOrder.number} marked as complete`,
+    );
     setSelectedOrderId(null);
   };
 
@@ -468,6 +957,9 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
   );
 
   if (selectedOrder) {
+    const changedExecutionItems = selectedOrder.executionItems.filter(
+      (item) => item.status === "changed",
+    );
     return (
       <View style={styles.container}>
         {/* Detail Header */}
@@ -494,17 +986,17 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
         <View style={styles.stepBar}>
           {visibleSteps.map((item) => (
             <TouchableOpacity
-              key={item.step}
+              key={item.key}
               style={[
                 styles.stepButton,
-                activeStep === item.step && styles.stepButtonActive,
+                activeStep === item.key && styles.stepButtonActive,
               ]}
-              onPress={() => setActiveStep(item.step as StepKey)}
+              onPress={() => setActiveStep(item.key)}
             >
               <Text
                 style={[
                   styles.stepButtonText,
-                  activeStep === item.step && styles.stepButtonTextActive,
+                  activeStep === item.key && styles.stepButtonTextActive,
                 ]}
               >
                 {item.label}
@@ -514,8 +1006,8 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
         </View>
 
         <ScrollView contentContainerStyle={styles.detailContent}>
-          {/* Step 1: Schedule Details & Execution */}
-          {activeStep === 1 && (
+          {/* Step 1: Details */}
+          {activeStep === "details" && (
             <>
               {/* Maintenance Schedule Details */}
               <View style={styles.detailCard}>
@@ -533,74 +1025,124 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
                     </View>
                   ))}
                 </View>
-              </View>
 
+                {/* Parts Used Section */}
+                <View style={styles.partsSection}>
+                  <Text style={styles.sectionTitle}>
+                    Parts Used, Cost, and Photos
+                  </Text>
+                  <Text style={styles.sectionText}>
+                    Labor, materials, uploads, and supporting documentation for
+                    this work order.
+                  </Text>
+                  {selectedOrder.partsUsedItems.length === 0 ? (
+                    <Text style={styles.emptyPartsText}>
+                      No parts recorded for this work order.
+                    </Text>
+                  ) : (
+                    selectedOrder.partsUsedItems.map((item) => (
+                      <View key={item.id} style={styles.partsItemCard}>
+                        <Text style={styles.partsItemTitle}>{item.label}</Text>
+                        <View style={styles.partsItemRow}>
+                          <View style={styles.partsItemColumn}>
+                            <Text style={styles.partsLabel}>Parts Used</Text>
+                            <Text style={styles.partsValue}>
+                              {item.partsUsed}
+                            </Text>
+                          </View>
+                          <View style={styles.partsItemColumn}>
+                            <Text style={styles.partsLabel}>Material Cost</Text>
+                            <Text style={styles.partsValue}>
+                              ₱{parseFloat(item.materialCost).toFixed(2)}
+                            </Text>
+                          </View>
+                        </View>
+                      </View>
+                    ))
+                  )}
+                </View>
+              </View>
             </>
           )}
 
-          {/* Step 2: Role-specific checklist */}
-          {activeStep === 2 && canViewExecutionChecklist && (
+          {/* Step 2: Execution */}
+          {activeStep === "execution" && (
             <View style={styles.detailCard}>
               <Text style={styles.sectionTitle}>Execution Checklist</Text>
               <Text style={styles.sectionText}>
-                Mechanics must select Checked, Changed, or Not Checked for each
-                execution item before completing execution.
+                Mark each item as Checked, Changed, or Not Checked and capture
+                notes.
               </Text>
-              {selectedOrder.executionItems.map((item) => (
-                <View key={item.id} style={styles.checklistItemCard}>
-                  <Text style={styles.checklistItemLabel}>{item.label}</Text>
-                  <View style={styles.checklistItemStatus}>
-                    <Text style={styles.statusLabel}>NO PART CHANGE RECORDED</Text>
-                  </View>
-                  <View style={styles.pillButtonRow}>
-                    {[
-                      { key: "checked", label: "Checked", color: "#e0e7ff" },
-                      { key: "changed", label: "Changed", color: "#fef3c7" },
-                      {
-                        key: "notChecked",
-                        label: "Not Checked",
-                        color: "#f3f4f6",
-                      },
-                    ].map((option) => (
-                      <TouchableOpacity
-                        key={option.key}
-                        style={[
-                          styles.pillButton,
-                          item.status === option.key && {
-                            backgroundColor: "#1a1f6e",
-                          },
-                        ]}
-                        onPress={() =>
-                          updateExecutionStatus(
-                            selectedOrder.id,
-                            item.id,
-                            option.key as ExecutionItem["status"],
-                          )
+              {selectedOrder.executionItems.length === 0 ? (
+                <Text style={styles.emptyPartsText}>
+                  No checklist items are available for this template yet.
+                </Text>
+              ) : (
+                selectedOrder.executionItems.map((item) => {
+                  const statusLabel =
+                    item.status === "changed"
+                      ? "PARTS CHANGE REQUIRED"
+                      : item.status === "checked"
+                        ? "CHECKED"
+                        : item.status === "notChecked"
+                          ? "NOT CHECKED"
+                          : "PENDING";
+
+                  return (
+                    <View key={item.id} style={styles.checklistItemCard}>
+                      <Text style={styles.checklistItemLabel}>
+                        {item.label}
+                      </Text>
+                      <View style={styles.checklistItemStatus}>
+                        <Text style={styles.statusLabel}>{statusLabel}</Text>
+                      </View>
+                      <View style={styles.pillButtonRow}>
+                        {[
+                          { key: "checked", label: "Checked" },
+                          { key: "changed", label: "Changed" },
+                          { key: "notChecked", label: "Not Checked" },
+                        ].map((option) => (
+                          <TouchableOpacity
+                            key={option.key}
+                            style={[
+                              styles.pillButton,
+                              item.status === option.key && {
+                                backgroundColor: "#1a1f6e",
+                              },
+                            ]}
+                            onPress={() =>
+                              updateExecutionStatus(
+                                selectedOrder.id,
+                                item.id,
+                                option.key as ExecutionItem["status"],
+                              )
+                            }
+                          >
+                            <Text
+                              style={[
+                                styles.pillButtonText,
+                                item.status === option.key &&
+                                  styles.pillButtonTextActive,
+                              ]}
+                            >
+                              {option.label}
+                            </Text>
+                          </TouchableOpacity>
+                        ))}
+                      </View>
+                      <TextInput
+                        style={styles.noteInput}
+                        placeholder="Add note"
+                        placeholderTextColor="#94a3b8"
+                        value={item.note}
+                        onChangeText={(text) =>
+                          updateExecutionNote(selectedOrder.id, item.id, text)
                         }
-                      >
-                        <Text
-                          style={[
-                            styles.pillButtonText,
-                            item.status === option.key &&
-                              styles.pillButtonTextActive,
-                          ]}
-                        >
-                          {option.label}
-                        </Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                  <TextInput
-                    style={styles.noteInput}
-                    placeholder="Add note"
-                    placeholderTextColor="#94a3b8"
-                    value={item.note}
-                    onChangeText={(text) =>
-                      updateExecutionNote(selectedOrder.id, item.id, text)
-                    }
-                  />
-                </View>
-              ))}
+                      />
+                    </View>
+                  );
+                })
+              )}
 
               <View style={styles.chiefMechanicSection}>
                 <Text style={styles.sectionTitle}>Chief Mechanic</Text>
@@ -608,10 +1150,14 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
                   Assign a chief mechanic before completing execution.
                 </Text>
                 <View style={styles.dropdownSection}>
-                  <Text style={styles.dropdownLabel}>Select Chief Mechanic</Text>
+                  <Text style={styles.dropdownLabel}>
+                    Select Chief Mechanic
+                  </Text>
                   <TouchableOpacity
                     style={styles.dropdownButton}
-                    onPress={() => setShowChiefMechanicOptions((value) => !value)}
+                    onPress={() =>
+                      setShowChiefMechanicOptions((value) => !value)
+                    }
                   >
                     <Text style={styles.dropdownButtonText}>
                       {selectedOrder.chiefMechanic || "Choose a chief mechanic"}
@@ -628,7 +1174,9 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
                             setShowChiefMechanicOptions(false);
                           }}
                         >
-                          <Text style={styles.dropdownOptionText}>{option}</Text>
+                          <Text style={styles.dropdownOptionText}>
+                            {option}
+                          </Text>
                         </TouchableOpacity>
                       ))}
                     </View>
@@ -638,112 +1186,198 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
             </View>
           )}
 
-          {(activeStep === 2 || activeStep === 3) && canViewInspectionChecklist && (!canViewExecutionChecklist || activeStep === 3) && (
+          {/* Step 3: Parts, Cost & Photos */}
+          {activeStep === "parts" && (
             <View style={styles.detailCard}>
-              <View style={styles.inspectionHeader}>
-                <Text style={styles.sectionTitle}>Inspection Checklist</Text>
-                <View style={styles.reviewBadge}>
-                  <Text style={styles.reviewBadgeText}>Review</Text>
-                </View>
-              </View>
+              <Text style={styles.sectionTitle}>Parts, Cost & Photos</Text>
               <Text style={styles.sectionText}>
-                Review inspection results and remarks in read-only mode.
+                {changedExecutionItems.length > 0
+                  ? `${changedExecutionItems.length} changed item${changedExecutionItems.length === 1 ? "" : "s"} will appear below.`
+                  : "Each item marked as Changed will generate a parts entry below."}
               </Text>
 
-              {selectedOrder.inspectionItems.map((item) => (
-                <View key={item.id} style={styles.inspectionItemCard}>
-                  <Text style={styles.inspectionItemLabel}>{item.label}</Text>
-                  <View style={styles.inspectionPillRow}>
-                    <TouchableOpacity
-                      style={[
-                        styles.inspectionPillButton,
-                        item.status === "pass" && styles.inspectionPillPass,
-                      ]}
-                      onPress={() =>
-                        updateInspectionStatus(
-                          selectedOrder.id,
-                          item.id,
-                          "pass",
-                        )
-                      }
-                    >
-                      <Text
-                        style={[
-                          styles.inspectionPillText,
-                          item.status === "pass" &&
-                            styles.inspectionPillTextActive,
-                        ]}
-                      >
-                        PASS
-                      </Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={[
-                        styles.inspectionPillButton,
-                        item.status === "fail" && styles.inspectionPillFail,
-                      ]}
-                      onPress={() =>
-                        updateInspectionStatus(
-                          selectedOrder.id,
-                          item.id,
-                          "fail",
-                        )
-                      }
-                    >
-                      <Text
-                        style={[
-                          styles.inspectionPillText,
-                          item.status === "fail" &&
-                            styles.inspectionPillTextActive,
-                        ]}
-                      >
-                        FAIL
-                      </Text>
-                    </TouchableOpacity>
-                  </View>
-                  <TextInput
-                    style={styles.noteInput}
-                    placeholder="Add inspection note"
-                    placeholderTextColor="#94a3b8"
-                    value={item.note}
-                    onChangeText={(text) =>
-                      updateInspectionNote(selectedOrder.id, item.id, text)
-                    }
-                  />
-                </View>
-              ))}
+              {changedExecutionItems.map((item) => {
+                const partEntry = selectedOrder.partDetails[item.id] ?? {
+                  partsUsed: "",
+                  quantity: "",
+                  materialCost: "",
+                  attachments: [],
+                  attachmentName: "",
+                  attachmentSizeMb: "",
+                };
 
-              {/* Inspector Remarks */}
-              <View style={styles.remarksSection}>
-                <Text style={styles.remarksLabel}>INSPECTOR REMARKS</Text>
-                <TextInput
-                  style={styles.remarksInput}
-                  placeholder="Add inspection remarks"
-                  placeholderTextColor="#94a3b8"
-                  value={selectedOrder.inspectorRemarks}
-                  onChangeText={(text) =>
-                    updateInspectorRemarks(selectedOrder.id, text)
-                  }
-                  multiline
-                  numberOfLines={4}
-                />
+                return (
+                  <View key={item.id} style={styles.partsItemCard}>
+                    <Text style={styles.partsItemTitle}>{item.label}</Text>
+                    <View style={styles.partsItemRow}>
+                      <View style={styles.partsItemColumn}>
+                        <Text style={styles.partsLabel}>Parts Used</Text>
+                        <TextInput
+                          style={styles.partsInput}
+                          value={partEntry.partsUsed}
+                          onChangeText={(text) =>
+                            updatePartDetailField(
+                              selectedOrder.id,
+                              item.id,
+                              "partsUsed",
+                              text,
+                            )
+                          }
+                          placeholder="Enter parts used"
+                          placeholderTextColor="#94a3b8"
+                        />
+                      </View>
+                      <View style={styles.partsItemColumn}>
+                        <Text style={styles.partsLabel}>
+                          Number of Materials Used
+                        </Text>
+                        <TextInput
+                          style={styles.partsInput}
+                          value={partEntry.quantity}
+                          keyboardType="numeric"
+                          onChangeText={(text) =>
+                            updatePartDetailField(
+                              selectedOrder.id,
+                              item.id,
+                              "quantity",
+                              text,
+                            )
+                          }
+                          placeholder="0"
+                          placeholderTextColor="#94a3b8"
+                        />
+                      </View>
+                    </View>
+                    <View style={styles.partsItemRow}>
+                      <View style={styles.partsItemColumn}>
+                        <Text style={styles.partsLabel}>Material Cost</Text>
+                        <TextInput
+                          style={styles.partsInput}
+                          value={partEntry.materialCost}
+                          keyboardType="decimal-pad"
+                          onChangeText={(text) =>
+                            updatePartDetailField(
+                              selectedOrder.id,
+                              item.id,
+                              "materialCost",
+                              text,
+                            )
+                          }
+                          placeholder="0.00"
+                          placeholderTextColor="#94a3b8"
+                        />
+                      </View>
+                    </View>
+                    <Text style={styles.partsLabel}>Photos / Attachments</Text>
+                    <TextInput
+                      style={styles.partsInput}
+                      value={partEntry.attachmentName}
+                      onChangeText={(text) =>
+                        updatePartDetailField(
+                          selectedOrder.id,
+                          item.id,
+                          "attachmentName",
+                          text,
+                        )
+                      }
+                      placeholder="Attachment name"
+                      placeholderTextColor="#94a3b8"
+                    />
+                    <TextInput
+                      style={styles.partsInput}
+                      value={partEntry.attachmentSizeMb}
+                      keyboardType="numeric"
+                      onChangeText={(text) =>
+                        updatePartDetailField(
+                          selectedOrder.id,
+                          item.id,
+                          "attachmentSizeMb",
+                          text,
+                        )
+                      }
+                      placeholder="Size in MB (max 5)"
+                      placeholderTextColor="#94a3b8"
+                    />
+                    <TouchableOpacity
+                      style={styles.uploadButton}
+                      onPress={() =>
+                        addAttachmentToItem(selectedOrder.id, item.id)
+                      }
+                    >
+                      <Text style={styles.uploadButtonText}>
+                        Add Attachment ({partEntry.attachments.length}/5)
+                      </Text>
+                    </TouchableOpacity>
+                    {partEntry.attachments.length === 0 ? (
+                      <Text style={styles.noFileText}>
+                        No attachments added yet.
+                      </Text>
+                    ) : (
+                      partEntry.attachments.map((attachment) => (
+                        <View key={attachment.id} style={styles.partsItemRow}>
+                          <Text style={styles.partsValue}>
+                            • {attachment.name} ({attachment.sizeMb} MB)
+                          </Text>
+                        </View>
+                      ))
+                    )}
+                  </View>
+                );
+              })}
+
+              {changedExecutionItems.length === 0 && (
+                <Text style={styles.emptyPartsText}>
+                  No changed items yet. Mark an execution item as Changed to
+                  populate this tab.
+                </Text>
+              )}
+
+              <View style={styles.costSummaryRow}>
+                <View style={styles.costCard}>
+                  <Text style={styles.costLabel}>Total Cost</Text>
+                  <Text style={styles.costValue}>
+                    ₱{calculateMaterialCost(selectedOrder.id)}
+                  </Text>
+                </View>
               </View>
 
-              {/* Inspection Results & Approval */}
-              <View style={styles.resultsRow}>
-                <View style={styles.resultsCard}>
-                  <Text style={styles.resultsLabel}>INSPECTION RESULTS</Text>
-                  <Text style={styles.resultsValue}>
-                    {selectedOrder.inspectionResultsPending} item(s) pending
+              <View style={styles.chiefMechanicSection}>
+                <Text style={styles.sectionTitle}>Chief Mechanic Sign-off</Text>
+                <Text style={styles.sectionText}>
+                  Select the chief mechanic for final inspection.
+                </Text>
+                <View style={styles.dropdownSection}>
+                  <Text style={styles.dropdownLabel}>
+                    Select Chief Mechanic
                   </Text>
-                </View>
-                <View style={styles.resultsCard}>
-                  <Text style={styles.resultsLabel}>
-                    APPROVAL / VERIFICATION
-                  </Text>
-                  <Text style={styles.resultsValue}>
-                    {selectedOrder.approvalStatus}
-                  </Text>
+                  <TouchableOpacity
+                    style={styles.dropdownButton}
+                    onPress={() =>
+                      setShowChiefMechanicOptions((value) => !value)
+                    }
+                  >
+                    <Text style={styles.dropdownButtonText}>
+                      {selectedOrder.chiefMechanic || "Choose a chief mechanic"}
+                    </Text>
+                  </TouchableOpacity>
+                  {showChiefMechanicOptions && (
+                    <View style={styles.dropdownMenu}>
+                      {chiefMechanicOptions.map((option) => (
+                        <TouchableOpacity
+                          key={option}
+                          style={styles.dropdownOption}
+                          onPress={() => {
+                            updateChiefMechanic(selectedOrder.id, option);
+                            setShowChiefMechanicOptions(false);
+                          }}
+                        >
+                          <Text style={styles.dropdownOptionText}>
+                            {option}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  )}
                 </View>
               </View>
             </View>
@@ -754,19 +1388,27 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
         <View style={styles.bottomBar}>
           <TouchableOpacity
             style={styles.bottomButtonSecondary}
-            onPress={() =>
-              setActiveStep((step) => (step > 1 ? ((step - 1) as StepKey) : 1))
-            }
+            onPress={() => {
+              const currentIndex = visibleSteps.findIndex(
+                (step) => step.key === activeStep,
+              );
+              const previousStep = visibleSteps[Math.max(0, currentIndex - 1)];
+              setActiveStep(previousStep.key);
+            }}
           >
             <Text style={styles.bottomButtonSecondaryText}>Previous</Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.bottomButtonPrimary}
             onPress={() => {
-              const maxStep = visibleSteps[visibleSteps.length - 1].step as StepKey;
-              setActiveStep((step) =>
-                step < maxStep ? ((step + 1) as StepKey) : maxStep,
+              const currentIndex = visibleSteps.findIndex(
+                (step) => step.key === activeStep,
               );
+              const nextStep =
+                visibleSteps[
+                  Math.min(visibleSteps.length - 1, currentIndex + 1)
+                ];
+              setActiveStep(nextStep.key);
             }}
           >
             <Text style={styles.bottomButtonPrimaryText}>Next</Text>
@@ -774,9 +1416,36 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
           <TouchableOpacity
             style={styles.bottomButtonPrimary}
             onPress={() => handleCompleteOrder()}
-            disabled={isMechanicRole && !selectedOrder.chiefMechanic.trim()}
+            disabled={
+              !(
+                selectedOrder.executionItems.length > 0 &&
+                selectedOrder.executionItems.every(
+                  (item) => item.status !== "pending",
+                ) &&
+                selectedOrder.executionItems
+                  .filter((item) => item.status === "changed")
+                  .every((item) => {
+                    const partEntry = selectedOrder.partDetails[item.id] ?? {
+                      partsUsed: "",
+                      quantity: "",
+                      materialCost: "",
+                      attachments: [],
+                      attachmentName: "",
+                      attachmentSizeMb: "",
+                    };
+
+                    return (
+                      partEntry.partsUsed.trim().length > 0 &&
+                      partEntry.quantity.trim().length > 0 &&
+                      partEntry.materialCost.trim().length > 0 &&
+                      partEntry.attachments.length > 0
+                    );
+                  }) &&
+                selectedOrder.chiefMechanic.trim().length > 0
+              )
+            }
           >
-            <Text style={styles.bottomButtonPrimaryText}>Mark Complete</Text>
+            <Text style={styles.bottomButtonPrimaryText}>Mark as Complete</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -791,7 +1460,7 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
           <Text style={styles.subtitle}>
             {isChiefMechanicRole
               ? "Review and verify inspection checklists"
-              : "Complete your assigned execution checklist tasks"}
+              : "Your assigned work orders grouped by mechanic"}
           </Text>
         </View>
       </View>
@@ -810,7 +1479,11 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
       </View>
 
       <ScrollView contentContainerStyle={styles.listContent}>
-        {filteredOrders.length === 0 ? (
+        {isLoading ? (
+          <View style={styles.emptyStateCard}>
+            <Text style={styles.emptyStateTitle}>Loading work orders…</Text>
+          </View>
+        ) : groupedOrderEntries.length === 0 ? (
           <View style={styles.emptyStateCard}>
             <Text style={styles.emptyStateTitle}>No assigned work orders</Text>
             <Text style={styles.emptyStateText}>
@@ -819,40 +1492,61 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
                 : "No inspection work orders are assigned to you right now."}
             </Text>
           </View>
-        ) : null}
-        {filteredOrders.map((order) => (
-          <Pressable
-            key={order.id}
-            style={styles.orderCard}
-            onPress={() => openOrder(order.id)}
-          >
-            <View style={styles.orderCardHeader}>
-              <Text style={styles.orderNumber}>{order.number}</Text>
-              {renderStatusBadge(order.status)}
-            </View>
-            <View style={styles.cardBody}>
-              <Text style={styles.cardValue} numberOfLines={1}>
-                <Text style={styles.cardBoldLabel}>{order.plate}</Text>
-              </Text>
-              <View style={styles.cardRow}>
-                <Text style={styles.cardLabel}>Maintenance Type</Text>
+        ) : (
+          groupedOrderEntries.map(([mechanicName, orders]) => (
+            <View key={mechanicName} style={styles.groupSection}>
+              <View style={styles.groupHeader}>
+                <Text style={styles.groupLabel}>Assigned Mechanic</Text>
+                <Text style={styles.groupMechanicName}>
+                  {accessRole === "mechanic"
+                    ? currentUserDisplayName
+                    : mechanicName}
+                </Text>
+                <Text style={styles.groupCount}>
+                  {orders.length === 1
+                    ? "1 work order"
+                    : `${orders.length} work orders`}
+                </Text>
               </View>
-              <Text style={styles.cardValue}>{order.maintenanceType}</Text>
-              <View style={styles.cardRow}>
-                <Text style={styles.cardLabel}>Mechanic</Text>
-              </View>
-              <Text style={styles.cardValue}>{order.mechanic}</Text>
-              <View style={styles.cardRow}>
-                <Text style={styles.cardLabel}>Date Created</Text>
-              </View>
-              <Text style={styles.cardValue}>{order.dateCreated}</Text>
+
+              {orders.map((order) => (
+                <Pressable
+                  key={order.id}
+                  style={styles.orderCard}
+                  onPress={() => openOrder(order.id)}
+                >
+                  <View style={styles.orderCardHeader}>
+                    <Text style={styles.orderNumber}>{order.number}</Text>
+                    {renderStatusBadge(order.status)}
+                  </View>
+                  <View style={styles.cardBody}>
+                    <Text style={styles.cardValue} numberOfLines={1}>
+                      <Text style={styles.cardBoldLabel}>{order.plate}</Text>
+                    </Text>
+                    <View style={styles.cardRow}>
+                      <Text style={styles.cardLabel}>Maintenance Type</Text>
+                    </View>
+                    <Text style={styles.cardValue}>
+                      {order.maintenanceType}
+                    </Text>
+                    <View style={styles.cardRow}>
+                      <Text style={styles.cardLabel}>Mechanic</Text>
+                    </View>
+                    <Text style={styles.cardValue}>{order.mechanic}</Text>
+                    <View style={styles.cardRow}>
+                      <Text style={styles.cardLabel}>Date Created</Text>
+                    </View>
+                    <Text style={styles.cardValue}>{order.dateCreated}</Text>
+                  </View>
+                  <View style={styles.orderCardFooter}>
+                    <Text style={styles.cardHint}>Open details</Text>
+                    <Text style={styles.cardArrow}>›</Text>
+                  </View>
+                </Pressable>
+              ))}
             </View>
-            <View style={styles.orderCardFooter}>
-              <Text style={styles.cardHint}>Open details</Text>
-              <Text style={styles.cardArrow}>›</Text>
-            </View>
-          </Pressable>
-        ))}
+          ))
+        )}
       </ScrollView>
     </View>
   );
@@ -873,7 +1567,7 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 2 },
   },
   headerTextBlock: { gap: 4 },
-  title: { fontSize: 22, fontWeight: "700", color: "#0d0d0d" },
+  title: { fontSize: 24, fontWeight: "800", color: "#0d0d0d" },
   subtitle: { color: "#64748b", fontSize: 13 },
   searchRow: {
     flexDirection: "row",
@@ -902,6 +1596,37 @@ const styles = StyleSheet.create({
   },
   filterButtonText: { color: "#ffffff", fontSize: 20, fontWeight: "700" },
   listContent: { paddingBottom: 20, gap: 12 },
+  groupSection: { gap: 10 },
+  groupHeader: {
+    backgroundColor: "#ffffff",
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    gap: 6,
+    shadowColor: "#000",
+    shadowOpacity: 0.02,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 1 },
+  },
+  groupLabel: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: "#94a3b8",
+    textTransform: "uppercase",
+    letterSpacing: 0.8,
+  },
+  groupMechanicName: {
+    fontSize: 16,
+    fontWeight: "800",
+    color: "#1a1f6e",
+  },
+  groupCount: {
+    fontSize: 12,
+    fontWeight: "500",
+    color: "#64748b",
+  },
   orderCard: {
     backgroundColor: "#ffffff",
     borderRadius: 16,
@@ -919,13 +1644,18 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     alignItems: "center",
   },
-  orderNumber: { fontSize: 16, fontWeight: "700", color: "#1a1f6e" },
-  statusBadge: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999 },
-  statusPending: { backgroundColor: "#fef2f2" },
-  statusInProgress: { backgroundColor: "#e0f2fe" },
-  statusOverdue: { backgroundColor: "#fef3c7" },
-  statusCompleted: { backgroundColor: "#dcfce7" },
-  statusBadgeText: { fontSize: 11, fontWeight: "700", color: "#0d0d0d" },
+  orderNumber: { fontSize: 16, fontWeight: "800", color: "#1a1f6e" },
+  statusBadge: {
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: 999,
+    borderWidth: 1.5,
+  },
+  statusPending: { backgroundColor: "#f8f8ff", borderColor: "#d9d6ef" },
+  statusInProgress: { backgroundColor: "#dbeafe", borderColor: "#7dd3fc" },
+  statusOverdue: { backgroundColor: "#fef5e7", borderColor: "#fcd34d" },
+  statusCompleted: { backgroundColor: "#dcfce7", borderColor: "#86efac" },
+  statusBadgeText: { fontSize: 11, fontWeight: "700", color: "#1a1f6e" },
   cardBody: { gap: 4 },
   cardRow: { marginTop: 8 },
   cardBoldLabel: {
@@ -1043,36 +1773,38 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     borderWidth: 1,
     borderColor: "#e2e8f0",
-    padding: 16,
-    gap: 12,
+    padding: 18,
+    gap: 14,
     shadowColor: "#000",
     shadowOpacity: 0.04,
     shadowRadius: 8,
     shadowOffset: { width: 0, height: 2 },
   },
-  sectionTitle: { fontSize: 16, fontWeight: "700", color: "#0d0d0d" },
-  sectionText: { color: "#64748b", fontSize: 13 },
+  sectionTitle: { fontSize: 18, fontWeight: "800", color: "#0d0d0d" },
+  sectionText: { color: "#64748b", fontSize: 13, marginTop: 2 },
 
   /* Schedule Details */
   scheduleGrid: {
     display: "flex",
-    flexDirection: "column",
-    gap: 12,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 16,
   },
   scheduleItem: {
-    paddingVertical: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: "#e2e8f0",
+    flex: 1,
+    minWidth: "48%",
+    paddingBottom: 12,
   },
   scheduleLabel: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: "700",
-    color: "#64748b",
+    color: "#94a3b8",
     textTransform: "uppercase",
-    marginBottom: 4,
+    marginBottom: 6,
+    letterSpacing: 0.6,
   },
   scheduleValue: {
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: "600",
     color: "#0d0d0d",
   },
@@ -1083,12 +1815,12 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     borderWidth: 1,
     borderColor: "#e2e8f0",
-    padding: 12,
-    gap: 10,
+    padding: 14,
+    gap: 11,
     marginBottom: 12,
   },
   checklistItemLabel: {
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: "700",
     color: "#0d0d0d",
   },
@@ -1174,26 +1906,51 @@ const styles = StyleSheet.create({
   },
 
   /* Parts & Photos */
+  partsSection: {
+    borderTopWidth: 1,
+    borderTopColor: "#e2e8f0",
+    paddingTop: 16,
+    marginTop: 16,
+    gap: 12,
+  },
+  emptyPartsText: {
+    fontSize: 13,
+    color: "#94a3b8",
+    fontStyle: "italic",
+  },
   partsItemCard: {
     backgroundColor: "#f8fafc",
     borderRadius: 12,
     borderWidth: 1,
     borderColor: "#e2e8f0",
-    padding: 12,
-    gap: 10,
+    padding: 14,
+    gap: 12,
     marginBottom: 12,
   },
   partsItemTitle: {
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: "700",
     color: "#0d0d0d",
   },
+  partsItemRow: {
+    flexDirection: "row",
+    gap: 12,
+  },
+  partsItemColumn: {
+    flex: 1,
+  },
   partsLabel: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: "700",
-    color: "#64748b",
+    color: "#94a3b8",
     textTransform: "uppercase",
-    marginBottom: 4,
+    marginBottom: 6,
+    letterSpacing: 0.6,
+  },
+  partsValue: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#0d0d0d",
   },
   partsInput: {
     borderWidth: 1,

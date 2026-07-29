@@ -144,14 +144,14 @@ export function DashboardScreen({
         <View style={styles.vehicleCard}>
           <View>
             <Text style={styles.plate}>{item.plateNumber}</Text>
-            <Text style={styles.model}>{item.vehicleModel}</Text>
+            <Text style={styles.model}>{item.model}</Text>
           </View>
           <View style={styles.vehicleRight}>
             <Text style={styles.vehicleStatus}>
               {item.status.replaceAll("_", " ")}
             </Text>
             <Text style={styles.odometer}>
-              {item.odometerReading.toLocaleString()} km
+              {item.odometer.toLocaleString()} km
             </Text>
           </View>
         </View>

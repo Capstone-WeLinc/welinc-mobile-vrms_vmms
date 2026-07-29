@@ -1,12 +1,52 @@
-export const DATABASE_NAME = 'vmms_mobile.db';
-export const DATABASE_VERSION = 1;
+export const DATABASE_NAME = "vmms_mobile.db";
+export const DATABASE_VERSION = 4;
+
+// Enums matching Prisma schema
+export enum VehicleStatus {
+  AVAILABLE = "AVAILABLE",
+  UNDER_REPAIR = "UNDER_REPAIR",
+  UNDER_MAINTENANCE = "UNDER_MAINTENANCE",
+}
+
+export enum MaintenanceStatus {
+  PENDING = "PENDING",
+  DUE = "DUE",
+  IN_PROGRESS = "IN_PROGRESS",
+  COMPLETED = "COMPLETED",
+  OVERDUE = "OVERDUE",
+  CANCELLED = "CANCELLED",
+}
+
+export enum MaintenanceTriggerType {
+  MANUAL = "MANUAL",
+  ODOMETER = "ODOMETER",
+  TIME = "TIME",
+}
+
+export enum MaintenanceIntervalType {
+  DAILY = "DAILY",
+  WEEKLY = "WEEKLY",
+  MONTHLY = "MONTHLY",
+  QUARTERLY = "QUARTERLY",
+  SEMI_ANNUALLY = "SEMI_ANNUALLY",
+  ANNUALLY = "ANNUALLY",
+}
+
+export enum AccountType {
+  IN_HOUSE = "IN_HOUSE",
+  OUTSOURCED = "OUTSOURCED",
+}
 
 export interface Vehicle {
   id: string;
   plateNumber: string;
-  vehicleModel: string;
-  status: string;
-  odometerReading: number;
+  model: string;
+  capacity: number;
+  status: VehicleStatus;
+  odometer: number;
+  isActive: boolean;
+  deletedAt: string | null;
+  createdAt: string;
   updatedAt: string;
 }
 
@@ -14,25 +54,41 @@ export interface MaintenanceSchedule {
   id: string;
   vehicleId: string;
   title: string;
-  triggerType: string | null;
-  intervalType: string | null;
-  status: string;
+  garageId: string | null;
+  status: MaintenanceStatus;
   assignedMechanic: string | null;
-  dueDate: string | null;
+  accountType: AccountType | null;
+  checklistTemplateId: string | null;
+  odometerReading: number | null;
+  triggerType: MaintenanceTriggerType | null;
+  intervalKm: number | null;
+  bufferDistanceKm: number | null;
+  startingReferenceReadingKm: number | null;
+  intervalType: MaintenanceIntervalType | null;
+  startReferenceDate: string | null;
+  previousScheduleId: string | null;
+  workOrderProgress: string | null; // JSON stored as string
+  deletedAt: string | null;
+  createdAt: string;
   updatedAt: string;
 }
 
 export interface ChecklistTemplate {
   id: string;
-  name: string;
+  type: string;
+  deletedAt: string | null;
+  createdAt: string;
   updatedAt: string;
 }
 
 export interface ChecklistItem {
   id: string;
-  templateId: string;
-  description: string;
-  isChecked: boolean;
+  checklistTemplateId: string;
+  text: string;
+  order: number;
+  deletedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 // This SQL contains no user input. Values are always written with bound parameters.
@@ -40,9 +96,13 @@ export const CREATE_TABLES_SQL = `
   CREATE TABLE IF NOT EXISTS vehicles (
     id TEXT PRIMARY KEY NOT NULL,
     plateNumber TEXT NOT NULL UNIQUE,
-    vehicleModel TEXT NOT NULL,
-    status TEXT NOT NULL,
-    odometerReading INTEGER NOT NULL DEFAULT 0 CHECK (odometerReading >= 0),
+    model TEXT NOT NULL,
+    capacity INTEGER NOT NULL DEFAULT 0 CHECK (capacity >= 0),
+    status TEXT NOT NULL CHECK (status IN ('AVAILABLE', 'UNDER_REPAIR', 'UNDER_MAINTENANCE')),
+    odometer INTEGER NOT NULL DEFAULT 0 CHECK (odometer >= 0),
+    isActive INTEGER NOT NULL DEFAULT 1 CHECK (isActive IN (0, 1)),
+    deletedAt TEXT,
+    createdAt TEXT NOT NULL,
     updatedAt TEXT NOT NULL
   );
 
@@ -50,26 +110,44 @@ export const CREATE_TABLES_SQL = `
     id TEXT PRIMARY KEY NOT NULL,
     vehicleId TEXT NOT NULL,
     title TEXT NOT NULL,
-    triggerType TEXT,
-    intervalType TEXT,
-    status TEXT NOT NULL,
+    garageId TEXT,
+    status TEXT NOT NULL CHECK (status IN ('PENDING', 'DUE', 'IN_PROGRESS', 'COMPLETED', 'OVERDUE', 'CANCELLED')),
     assignedMechanic TEXT,
-    dueDate TEXT,
-    updatedAt TEXT NOT NULL
+    accountType TEXT CHECK (accountType IN ('IN_HOUSE', 'OUTSOURCED', NULL)),
+    checklistTemplateId TEXT,
+    odometerReading INTEGER,
+    triggerType TEXT CHECK (triggerType IN ('MANUAL', 'ODOMETER', 'TIME', NULL)),
+    intervalKm INTEGER,
+    bufferDistanceKm INTEGER,
+    startingReferenceReadingKm INTEGER,
+    intervalType TEXT CHECK (intervalType IN ('DAILY', 'WEEKLY', 'MONTHLY', 'QUARTERLY', 'SEMI_ANNUALLY', 'ANNUALLY', NULL)),
+    startReferenceDate TEXT,
+    previousScheduleId TEXT UNIQUE,
+    workOrderProgress TEXT,
+    deletedAt TEXT,
+    createdAt TEXT NOT NULL,
+    updatedAt TEXT NOT NULL,
+    FOREIGN KEY (checklistTemplateId) REFERENCES checklist_templates(id) ON DELETE SET NULL,
+    FOREIGN KEY (previousScheduleId) REFERENCES maintenance_schedules(id) ON DELETE SET NULL
   );
 
   CREATE TABLE IF NOT EXISTS checklist_templates (
     id TEXT PRIMARY KEY NOT NULL,
-    name TEXT NOT NULL UNIQUE,
+    type TEXT NOT NULL UNIQUE,
+    deletedAt TEXT,
+    createdAt TEXT NOT NULL,
     updatedAt TEXT NOT NULL
   );
 
   CREATE TABLE IF NOT EXISTS checklist_items (
     id TEXT PRIMARY KEY NOT NULL,
-    templateId TEXT NOT NULL,
-    description TEXT NOT NULL,
-    isChecked INTEGER NOT NULL DEFAULT 0 CHECK (isChecked IN (0, 1)),
-    FOREIGN KEY (templateId) REFERENCES checklist_templates(id) ON DELETE CASCADE
+    checklistTemplateId TEXT NOT NULL,
+    text TEXT NOT NULL,
+    "order" INTEGER NOT NULL DEFAULT 0,
+    deletedAt TEXT,
+    createdAt TEXT NOT NULL,
+    updatedAt TEXT NOT NULL,
+    FOREIGN KEY (checklistTemplateId) REFERENCES checklist_templates(id) ON DELETE CASCADE
   );
 
   CREATE TABLE IF NOT EXISTS sync_metadata (
@@ -77,10 +155,14 @@ export const CREATE_TABLES_SQL = `
     value TEXT NOT NULL
   );
 
-  CREATE INDEX IF NOT EXISTS idx_maintenance_vehicleId
-    ON maintenance_schedules(vehicleId);
-  CREATE INDEX IF NOT EXISTS idx_maintenance_updatedAt
-    ON maintenance_schedules(updatedAt);
-  CREATE INDEX IF NOT EXISTS idx_checklist_items_templateId
-    ON checklist_items(templateId);
+  CREATE INDEX IF NOT EXISTS idx_vehicles_deletedAt ON vehicles(deletedAt);
+  CREATE INDEX IF NOT EXISTS idx_vehicles_plateNumber ON vehicles(plateNumber);
+  CREATE INDEX IF NOT EXISTS idx_maintenance_vehicleId ON maintenance_schedules(vehicleId);
+  CREATE INDEX IF NOT EXISTS idx_maintenance_checklistTemplateId ON maintenance_schedules(checklistTemplateId);
+  CREATE INDEX IF NOT EXISTS idx_maintenance_updatedAt ON maintenance_schedules(updatedAt);
+  CREATE INDEX IF NOT EXISTS idx_maintenance_deletedAt ON maintenance_schedules(deletedAt);
+  CREATE INDEX IF NOT EXISTS idx_maintenance_status ON maintenance_schedules(status);
+  CREATE INDEX IF NOT EXISTS idx_checklist_templates_deletedAt ON checklist_templates(deletedAt);
+  CREATE INDEX IF NOT EXISTS idx_checklist_items_templateId ON checklist_items(checklistTemplateId);
+  CREATE INDEX IF NOT EXISTS idx_checklist_items_deletedAt ON checklist_items(deletedAt);
 `;

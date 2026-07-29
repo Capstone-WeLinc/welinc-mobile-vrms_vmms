@@ -30,6 +30,7 @@ const welinc = require("./assets/welinc_logo.jpg");
 const syncService = new SyncService({
   apiBaseUrl: API_BASE_URL,
   getAccessToken: () => authService.getAccessToken(),
+  onUnauthorized: () => authService.clearSession(),
 });
 
 export default function App() {
@@ -45,8 +46,17 @@ export default function App() {
   useEffect(() => {
     let mounted = true;
     Promise.all([initializeDatabase(), authService.restoreSession()])
-      .then(([, restoredUser]) => {
+      .then(async ([, restoredUser]) => {
         if (!mounted) return;
+
+        if (restoredUser) {
+          try {
+            await syncService.forceRefreshFromBackend();
+          } catch (error) {
+            console.warn("[App] Forced backend refresh failed", error);
+          }
+        }
+
         setUser(restoredUser);
         setStartupStatus("ready");
       })
@@ -117,7 +127,10 @@ export default function App() {
           <Text style={styles.error}>
             Only mechanics and chief mechanics can use this mobile version.
           </Text>
-          <TouchableOpacity style={styles.logoutButton} onPress={() => void logout()}>
+          <TouchableOpacity
+            style={styles.logoutButton}
+            onPress={() => void logout()}
+          >
             <Text style={styles.logoutButtonText}>Log out</Text>
           </TouchableOpacity>
         </View>
@@ -132,7 +145,8 @@ export default function App() {
             <View style={styles.headerTextBlock}>
               <Text style={styles.title}>VMMS</Text>
               <Text style={styles.userName}>
-                {user.name} • {accessRole === "chiefMechanic" ? "Chief Mechanic" : "Mechanic"}
+                {user.name} •{" "}
+                {accessRole === "chiefMechanic" ? "Chief Mechanic" : "Mechanic"}
               </Text>
             </View>
           </View>
