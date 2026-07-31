@@ -102,9 +102,7 @@ export function DashboardScreen({
               <Text style={styles.title}>Vehicle Maintenance</Text>
               <Text style={styles.subtitle}>Signed in as {user.name}</Text>
             </View>
-            <Pressable onPress={() => void onLogout()}>
-              <Text style={styles.logout}>Log out</Text>
-            </Pressable>
+            <Pressable onPress={() => void onLogout()}></Pressable>
           </View>
 
           <View

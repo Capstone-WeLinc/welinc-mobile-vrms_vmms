@@ -16,13 +16,22 @@ import type {
   AuthenticatedUser,
   MobileAccessRole,
 } from "../services/AuthService";
+import { API_BASE_URL, AuthService } from "../services/AuthService";
 import { getDatabase } from "../database/database";
 import { ChecklistRepository } from "../repositories/ChecklistRepository";
 import { MaintenanceRepository } from "../repositories/MaintenanceRepository";
 import type { ChecklistItem, MaintenanceSchedule } from "../database/tables";
 
-type WorkOrderStatus = "Pending" | "In Progress" | "Overdue" | "Completed";
-type StepKey = "details" | "execution" | "parts";
+type WorkOrderStatus =
+  | "Pending"
+  | "In Progress"
+  | "For Verification"
+  | "Overdue"
+  | "Completed"
+  | "Done"
+  | "Rejected"
+  | "For Repair";
+type StepKey = "details" | "execution" | "parts" | "inspection";
 
 type ExecutionItem = {
   id: string;
@@ -37,6 +46,8 @@ type InspectionItem = {
   status: "pass" | "fail" | "pending";
   note: string;
 };
+
+type InspectionRemark = "Verified" | "Rejected" | "For Repair" | "Unverified";
 
 type PartsUsedItem = {
   id: string;
@@ -85,7 +96,72 @@ type WorkOrder = {
   chiefMechanic: string;
   inspectorRemarks: string;
   inspectionResultsPending: number;
-  approvalStatus: "Pending verification" | "Approved" | "Rejected";
+  approvalStatus: InspectionRemark;
+  mechanicSubmitted: boolean;
+  workOrderProgress: string | null;
+};
+
+type PersistedWorkOrderProgress = Omit<
+  Pick<
+    WorkOrder,
+    | "executionItems"
+    | "partDetails"
+    | "inspectionItems"
+    | "chiefMechanic"
+    | "inspectorRemarks"
+    | "approvalStatus"
+  >,
+  "approvalStatus"
+> & {
+  mechanicSubmitted?: boolean;
+  workflowStatus?: WorkOrderStatus;
+  approvalStatus?: InspectionRemark | "Incomplete" | "Unverified Remarks";
+};
+
+const parseWorkOrderProgress = (
+  value: string | null,
+  executionItems: ExecutionItem[],
+): Partial<WorkOrder> => {
+  if (!value) return {};
+
+  try {
+    const parsed = JSON.parse(value) as Partial<PersistedWorkOrderProgress>;
+    return {
+      executionItems: Array.isArray(parsed.executionItems)
+        ? parsed.executionItems
+        : executionItems,
+      partDetails:
+        parsed.partDetails && typeof parsed.partDetails === "object"
+          ? parsed.partDetails
+          : undefined,
+      inspectionItems: Array.isArray(parsed.inspectionItems)
+        ? parsed.inspectionItems
+        : [],
+      chiefMechanic:
+        typeof parsed.chiefMechanic === "string" ? parsed.chiefMechanic : "",
+      inspectorRemarks:
+        typeof parsed.inspectorRemarks === "string"
+          ? parsed.inspectorRemarks
+          : "",
+      approvalStatus:
+        parsed.approvalStatus === "Verified" ||
+        parsed.approvalStatus === "Rejected" ||
+        parsed.approvalStatus === "Incomplete" ||
+        parsed.approvalStatus === "For Repair" ||
+        parsed.approvalStatus === "Unverified" ||
+        parsed.approvalStatus === "Unverified Remarks"
+          ? parsed.approvalStatus === "Incomplete"
+            ? "Rejected"
+            : parsed.approvalStatus === "Unverified Remarks"
+              ? "Unverified"
+              : parsed.approvalStatus
+          : "Unverified",
+      mechanicSubmitted: parsed.mechanicSubmitted === true,
+      status: parsed.workflowStatus,
+    };
+  } catch {
+    return {};
+  }
 };
 
 const formatReadableDate = (value: string | null | undefined): string => {
@@ -203,6 +279,38 @@ const buildExecutionItems = (
     }));
 };
 
+const buildInspectionItems = (
+  executionItems: ExecutionItem[],
+): InspectionItem[] =>
+  executionItems.map((item) => ({
+    id: item.id,
+    label: item.label,
+    status: "pending",
+    note: "",
+  }));
+
+const getAutomaticInspectionRemark = (
+  inspectionItems: InspectionItem[],
+): InspectionRemark => {
+  if (
+    inspectionItems.length === 0 ||
+    inspectionItems.some((item) => item.status === "pending")
+  ) {
+    return "Unverified";
+  }
+
+  const failCount = inspectionItems.filter(
+    (item) => item.status === "fail",
+  ).length;
+  const passCount = inspectionItems.filter(
+    (item) => item.status === "pass",
+  ).length;
+
+  if (failCount > passCount) return "For Repair";
+  if (failCount > 0) return "Rejected";
+  return "Verified";
+};
+
 const resolveChecklistTemplate = async (
   checklistRepo: ChecklistRepository,
   templateId: string | null,
@@ -258,6 +366,11 @@ interface WorkOrderScreenProps {
 }
 
 export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
+  const fallbackChiefMechanicOptions = [
+    "Ariel Santos",
+    "Ramon Cruz",
+    "Lorenzo Reyes",
+  ];
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
@@ -265,6 +378,29 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
   const [activeStep, setActiveStep] = useState<StepKey>("details");
   const [showChiefMechanicOptions, setShowChiefMechanicOptions] =
     useState(false);
+  const [chiefMechanicOptions, setChiefMechanicOptions] = useState<string[]>(
+    [],
+  );
+
+  useEffect(() => {
+    let mounted = true;
+    void new AuthService(API_BASE_URL)
+      .getChiefMechanics()
+      .then((chiefMechanics) => {
+        if (mounted) {
+          setChiefMechanicOptions(
+            chiefMechanics.length > 0
+              ? chiefMechanics
+                  .map((chiefMechanic) => chiefMechanic.name.trim())
+                  .filter(Boolean)
+              : fallbackChiefMechanicOptions,
+          );
+        }
+      });
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   useEffect(() => {
     let mounted = true;
@@ -299,6 +435,15 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
               }),
               {},
             );
+            const savedProgress = parseWorkOrderProgress(
+              schedule.workOrderProgress,
+              executionItems,
+            );
+            const savedExecutionItems =
+              savedProgress.executionItems ?? executionItems;
+            const savedInspectionItems = savedProgress.inspectionItems?.length
+              ? savedProgress.inspectionItems
+              : buildInspectionItems(savedExecutionItems);
 
             return {
               id: schedule.id,
@@ -308,15 +453,16 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
               mechanic: schedule.assignedMechanic || "Unassigned",
               dateCreated: formatReadableDate(schedule.createdAt),
               status:
-                schedule.status === "PENDING"
+                savedProgress.status ??
+                (schedule.status === "PENDING"
                   ? "Pending"
                   : schedule.status === "DUE"
                     ? "Pending"
                     : schedule.status === "IN_PROGRESS"
                       ? "In Progress"
                       : schedule.status === "COMPLETED"
-                        ? "Completed"
-                        : "Overdue",
+                        ? "Done"
+                        : "Overdue"),
               summary: `${schedule.title} - ${schedule.intervalType || "As needed"}`,
               details: [],
               template: resolvedTemplate.templateName,
@@ -385,7 +531,7 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
                   ),
                 },
               ],
-              executionItems,
+              executionItems: savedExecutionItems,
               partsUsedItems: [
                 {
                   id: "p1",
@@ -394,12 +540,21 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
                   materialCost: "0.00",
                 },
               ],
-              partDetails,
-              inspectionItems: [],
-              chiefMechanic: "",
-              inspectorRemarks: "",
+              partDetails: savedProgress.partDetails ?? partDetails,
+              inspectionItems: savedInspectionItems,
+              chiefMechanic: savedProgress.chiefMechanic ?? "",
+              inspectorRemarks: savedProgress.inspectorRemarks ?? "",
               inspectionResultsPending: 0,
-              approvalStatus: "Pending verification",
+              approvalStatus:
+                savedProgress.approvalStatus === "For Repair"
+                  ? "For Repair"
+                  : savedProgress.approvalStatus === "Rejected"
+                    ? "Rejected"
+                    : getAutomaticInspectionRemark(savedInspectionItems),
+              mechanicSubmitted:
+                savedProgress.mechanicSubmitted ??
+                savedProgress.status === "For Verification",
+              workOrderProgress: schedule.workOrderProgress,
             };
           }),
         );
@@ -450,6 +605,10 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
         const executionItems = buildExecutionItems(
           resolvedTemplate.templateItems,
         );
+        const savedProgress = parseWorkOrderProgress(
+          currentOrder.workOrderProgress,
+          executionItems,
+        );
 
         setWorkOrders((current) =>
           current.map((order) => {
@@ -470,8 +629,14 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
 
             return {
               ...order,
-              executionItems,
+              executionItems: savedProgress.executionItems ?? executionItems,
               partDetails,
+              inspectionItems: savedProgress.inspectionItems?.length
+                ? savedProgress.inspectionItems
+                : buildInspectionItems(
+                    savedProgress.executionItems ?? executionItems,
+                  ),
+              workOrderProgress: currentOrder.workOrderProgress,
             };
           }),
         );
@@ -490,9 +655,73 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
     };
   }, [selectedOrderId]);
 
-  const chiefMechanicOptions = ["Ariel Santos", "Ramon Cruz", "Lorenzo Reyes"];
+  const knownChiefMechanics = workOrders
+    .map((order) => order.chiefMechanic.trim())
+    .filter(Boolean);
+  const availableChiefMechanics = Array.from(
+    new Set([...chiefMechanicOptions, ...knownChiefMechanics]),
+  );
   const currentUserName = user.name.trim().toLowerCase();
   const currentUserDisplayName = user.name.trim();
+
+  const persistWorkOrder = (order: WorkOrder, status?: string) => {
+    const progress = {
+      executionItems: order.executionItems,
+      partDetails: order.partDetails,
+      inspectionItems: order.inspectionItems,
+      chiefMechanic: order.chiefMechanic,
+      inspectorRemarks: order.inspectorRemarks,
+      approvalStatus: order.approvalStatus,
+      mechanicSubmitted: order.mechanicSubmitted,
+      workflowStatus: order.status,
+    };
+    const authService = new AuthService(API_BASE_URL);
+
+    void Promise.all([
+      getDatabase().then((db) =>
+        new MaintenanceRepository(db).updateWorkOrderProgress(
+          order.id,
+          JSON.stringify(progress),
+          status,
+        ),
+      ),
+      authService.updateMaintenanceProgress(order.id, progress),
+    ]).catch((error) =>
+      console.error(
+        "[WorkOrderScreen] Failed to save work order progress",
+        error,
+      ),
+    );
+  };
+
+  const updateWorkOrder = (
+    orderId: string,
+    update: (order: WorkOrder) => WorkOrder,
+  ) => {
+    const order = workOrders.find((item) => item.id === orderId);
+    if (!order) return;
+    if (
+      accessRole === "mechanic" &&
+      (order.mechanicSubmitted ||
+        order.approvalStatus === "Verified" ||
+        order.status === "Done") &&
+      order.approvalStatus !== "Rejected"
+    ) {
+      return;
+    }
+    const updatedOrder = update(order);
+    setWorkOrders((current) =>
+      current.map((item) => (item.id === orderId ? updatedOrder : item)),
+    );
+    persistWorkOrder(
+      updatedOrder,
+      updatedOrder.status === "Done"
+        ? "COMPLETED"
+        : updatedOrder.status === "For Verification"
+          ? "IN_PROGRESS"
+          : undefined,
+    );
+  };
 
   const filteredOrders = workOrders.filter((order) => {
     const query = searchQuery.toLowerCase();
@@ -510,6 +739,12 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
     if (accessRole === "chiefMechanic") {
       return (
         matchesQuery &&
+        (order.mechanicSubmitted ||
+          order.status === "Pending" ||
+          order.status === "For Verification" ||
+          order.status === "Done" ||
+          order.status === "Rejected" ||
+          order.status === "For Repair") &&
         order.chiefMechanic.trim().toLowerCase() === currentUserName
       );
     }
@@ -538,17 +773,15 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
     itemId: string,
     status: ExecutionItem["status"],
   ) => {
-    setWorkOrders((current) =>
-      current.map((order) => {
-        if (order.id !== orderId) return order;
-        return {
-          ...order,
-          executionItems: order.executionItems.map((item) =>
-            item.id === itemId ? { ...item, status } : item,
-          ),
-        };
-      }),
-    );
+    updateWorkOrder(orderId, (order) => ({
+      ...order,
+      executionItems: order.executionItems.map((item) =>
+        item.id === itemId ? { ...item, status } : item,
+      ),
+      inspectionItems: order.inspectionItems.length
+        ? order.inspectionItems
+        : buildInspectionItems(order.executionItems),
+    }));
   };
 
   const updateExecutionNote = (
@@ -556,25 +789,16 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
     itemId: string,
     note: string,
   ) => {
-    setWorkOrders((current) =>
-      current.map((order) => {
-        if (order.id !== orderId) return order;
-        return {
-          ...order,
-          executionItems: order.executionItems.map((item) =>
-            item.id === itemId ? { ...item, note } : item,
-          ),
-        };
-      }),
-    );
+    updateWorkOrder(orderId, (order) => ({
+      ...order,
+      executionItems: order.executionItems.map((item) =>
+        item.id === itemId ? { ...item, note } : item,
+      ),
+    }));
   };
 
   const updateChiefMechanic = (orderId: string, name: string) => {
-    setWorkOrders((current) =>
-      current.map((order) =>
-        order.id === orderId ? { ...order, chiefMechanic: name } : order,
-      ),
-    );
+    updateWorkOrder(orderId, (order) => ({ ...order, chiefMechanic: name }));
   };
 
   const updateInspectionStatus = (
@@ -582,17 +806,22 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
     itemId: string,
     status: InspectionItem["status"],
   ) => {
-    setWorkOrders((current) =>
-      current.map((order) => {
-        if (order.id !== orderId) return order;
-        return {
-          ...order,
-          inspectionItems: order.inspectionItems.map((item) =>
-            item.id === itemId ? { ...item, status } : item,
-          ),
-        };
-      }),
-    );
+    updateWorkOrder(orderId, (order) => {
+      const inspectionItems = order.inspectionItems.map((item) =>
+        item.id === itemId ? { ...item, status } : item,
+      );
+      return {
+        ...order,
+        inspectionItems,
+        approvalStatus: getAutomaticInspectionRemark(inspectionItems),
+        mechanicSubmitted:
+          getAutomaticInspectionRemark(inspectionItems) !== "Rejected",
+        status:
+          getAutomaticInspectionRemark(inspectionItems) === "Verified"
+            ? "Done"
+            : "For Verification",
+      };
+    });
   };
 
   const updateInspectionNote = (
@@ -600,25 +829,19 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
     itemId: string,
     note: string,
   ) => {
-    setWorkOrders((current) =>
-      current.map((order) => {
-        if (order.id !== orderId) return order;
-        return {
-          ...order,
-          inspectionItems: order.inspectionItems.map((item) =>
-            item.id === itemId ? { ...item, note } : item,
-          ),
-        };
-      }),
-    );
+    updateWorkOrder(orderId, (order) => ({
+      ...order,
+      inspectionItems: order.inspectionItems.map((item) =>
+        item.id === itemId ? { ...item, note } : item,
+      ),
+    }));
   };
 
   const updateInspectorRemarks = (orderId: string, remarks: string) => {
-    setWorkOrders((current) =>
-      current.map((order) =>
-        order.id === orderId ? { ...order, inspectorRemarks: remarks } : order,
-      ),
-    );
+    updateWorkOrder(orderId, (order) => ({
+      ...order,
+      inspectorRemarks: remarks,
+    }));
   };
 
   const updatePartDetailField = (
@@ -627,21 +850,16 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
     field: keyof PartDetailEntry,
     value: string,
   ) => {
-    setWorkOrders((current) =>
-      current.map((order) => {
-        if (order.id !== orderId) return order;
-        return {
-          ...order,
-          partDetails: {
-            ...order.partDetails,
-            [itemId]: {
-              ...order.partDetails[itemId],
-              [field]: value,
-            },
-          },
-        };
-      }),
-    );
+    updateWorkOrder(orderId, (order) => ({
+      ...order,
+      partDetails: {
+        ...order.partDetails,
+        [itemId]: {
+          ...order.partDetails[itemId],
+          [field]: value,
+        },
+      },
+    }));
   };
 
   const addAttachmentToItem = async (orderId: string, itemId: string) => {
@@ -731,7 +949,16 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
           }
           setWorkOrders((current) =>
             current.map((existingOrder) => {
-              if (existingOrder.id !== orderId) return existingOrder;
+              if (
+                existingOrder.id !== orderId ||
+                (isMechanicRole &&
+                  (existingOrder.mechanicSubmitted ||
+                    existingOrder.approvalStatus === "Verified" ||
+                    existingOrder.status === "Done") &&
+                  existingOrder.approvalStatus !== "Rejected")
+              ) {
+                return existingOrder;
+              }
               return {
                 ...existingOrder,
                 partDetails: {
@@ -772,7 +999,16 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
           }
           setWorkOrders((current) =>
             current.map((existingOrder) => {
-              if (existingOrder.id !== orderId) return existingOrder;
+              if (
+                existingOrder.id !== orderId ||
+                (isMechanicRole &&
+                  (existingOrder.mechanicSubmitted ||
+                    existingOrder.approvalStatus === "Verified" ||
+                    existingOrder.status === "Done") &&
+                  existingOrder.approvalStatus !== "Rejected")
+              ) {
+                return existingOrder;
+              }
               return {
                 ...existingOrder,
                 partDetails: {
@@ -811,7 +1047,16 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
           }
           setWorkOrders((current) =>
             current.map((existingOrder) => {
-              if (existingOrder.id !== orderId) return existingOrder;
+              if (
+                existingOrder.id !== orderId ||
+                (isMechanicRole &&
+                  (existingOrder.mechanicSubmitted ||
+                    existingOrder.approvalStatus === "Verified" ||
+                    existingOrder.status === "Done") &&
+                  existingOrder.approvalStatus !== "Rejected")
+              ) {
+                return existingOrder;
+              }
               return {
                 ...existingOrder,
                 partDetails: {
@@ -865,8 +1110,12 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
   const isChiefMechanicRole = accessRole === "chiefMechanic";
   const visibleSteps = [
     { key: "details" as StepKey, label: "Details" },
-    { key: "execution" as StepKey, label: "Execution" },
-    { key: "parts" as StepKey, label: "Parts, Cost & Photos" },
+    ...(isMechanicRole
+      ? [
+          { key: "execution" as StepKey, label: "Execution" },
+          { key: "parts" as StepKey, label: "Parts, Cost & Photos" },
+        ]
+      : [{ key: "inspection" as StepKey, label: "Inspection Checklist" }]),
   ];
 
   const exportPDF = () => {
@@ -877,6 +1126,55 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
 
   const handleCompleteOrder = () => {
     if (!selectedOrder) return;
+
+    if (isChiefMechanicRole) {
+      const hasInspectionResults =
+        selectedOrder.inspectionItems.length > 0 &&
+        selectedOrder.inspectionItems.every(
+          (item) => item.status !== "pending",
+        );
+
+      if (!hasInspectionResults) {
+        Alert.alert(
+          "Inspection Incomplete",
+          "Mark every inspection item as Pass or Fail before approving this work order.",
+        );
+        return;
+      }
+
+      if (
+        selectedOrder.approvalStatus === "Verified" &&
+        selectedOrder.inspectionItems.some((item) => item.status === "fail")
+      ) {
+        Alert.alert(
+          "Inspection Cannot Be Verified",
+          "A work order with failed inspection items is automatically Rejected.",
+        );
+        return;
+      }
+
+      const approved = selectedOrder.approvalStatus === "Verified";
+      const updatedOrder = {
+        ...selectedOrder,
+        approvalStatus: approved
+          ? ("Verified" as const)
+          : selectedOrder.approvalStatus,
+        mechanicSubmitted: selectedOrder.approvalStatus === "Rejected",
+        status: approved ? ("Done" as const) : ("For Verification" as const),
+      };
+      setWorkOrders((current) =>
+        current.map((order) =>
+          order.id === updatedOrder.id ? updatedOrder : order,
+        ),
+      );
+      persistWorkOrder(updatedOrder, approved ? "COMPLETED" : "IN_PROGRESS");
+      Alert.alert(
+        approved ? "Inspection Verified" : "Inspection Submitted",
+        `${selectedOrder.number} ${approved ? "verified" : "returned to the mechanic"}.`,
+      );
+      setSelectedOrderId(null);
+      return;
+    }
 
     const hasExecutionStatuses =
       selectedOrder.executionItems.length > 0 &&
@@ -906,6 +1204,17 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
 
     const hasChiefMechanic = selectedOrder.chiefMechanic.trim().length > 0;
 
+    if (
+      selectedOrder.mechanicSubmitted &&
+      selectedOrder.approvalStatus !== "Rejected"
+    ) {
+      Alert.alert(
+        "Already Sent for Verification",
+        "This work order is locked until the chief mechanic returns it as Rejected.",
+      );
+      return;
+    }
+
     if (!hasExecutionStatuses) {
       Alert.alert(
         "Execution Incomplete",
@@ -930,9 +1239,106 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
       return;
     }
 
+    const submittedOrder = {
+      ...selectedOrder,
+      mechanicSubmitted: true,
+      approvalStatus: "Unverified" as const,
+      status: "Pending" as const,
+    };
+    setWorkOrders((current) =>
+      current.map((order) =>
+        order.id === submittedOrder.id ? submittedOrder : order,
+      ),
+    );
+    persistWorkOrder(submittedOrder, "IN_PROGRESS");
     Alert.alert(
-      "Work Order Completed",
-      `${selectedOrder.number} marked as complete`,
+      "Sent for Inspection",
+      `${selectedOrder.number} was sent to ${selectedOrder.chiefMechanic} for inspection.`,
+    );
+    setSelectedOrderId(null);
+  };
+
+  const getInspectionActionLabel = (remark: InspectionRemark): string => {
+    switch (remark) {
+      case "Verified":
+        return "Mark as Completed";
+      case "Rejected":
+        return "Mark as Rejected";
+      case "For Repair":
+        return "Transfer to Repair";
+      default:
+        return "Mark as Completed";
+    }
+  };
+
+  const handleInspectionAction = () => {
+    if (!selectedOrder) return;
+
+    const remark = getAutomaticInspectionRemark(selectedOrder.inspectionItems);
+    if (remark === "Unverified") {
+      if (isMechanicRole && !selectedOrder.mechanicSubmitted) {
+        handleCompleteOrder();
+      }
+      return;
+    }
+
+    if (remark === "Verified") {
+      const completedOrder = {
+        ...selectedOrder,
+        approvalStatus: "Verified" as const,
+        mechanicSubmitted: true,
+        status: "Done" as const,
+      };
+      setWorkOrders((current) =>
+        current.map((order) =>
+          order.id === completedOrder.id ? completedOrder : order,
+        ),
+      );
+      persistWorkOrder(completedOrder, "COMPLETED");
+      Alert.alert(
+        "Inspection Completed",
+        `${selectedOrder.number} is now Done.`,
+      );
+      setSelectedOrderId(null);
+      return;
+    }
+
+    if (remark === "Rejected") {
+      const rejectedOrder = {
+        ...selectedOrder,
+        approvalStatus: "Rejected" as const,
+        mechanicSubmitted: false,
+        status: "Rejected" as const,
+      };
+      setWorkOrders((current) =>
+        current.map((order) =>
+          order.id === rejectedOrder.id ? rejectedOrder : order,
+        ),
+      );
+      persistWorkOrder(rejectedOrder, "IN_PROGRESS");
+      Alert.alert(
+        "Inspection Rejected",
+        `${selectedOrder.number} was returned for correction.`,
+      );
+      setSelectedOrderId(null);
+      return;
+    }
+
+    const repairOrder = {
+      ...selectedOrder,
+      approvalStatus: "For Repair" as const,
+      mechanicSubmitted: true,
+      status: "For Repair" as const,
+    };
+    setWorkOrders((current) =>
+      current.map((order) =>
+        order.id === repairOrder.id ? repairOrder : order,
+      ),
+    );
+    persistWorkOrder(repairOrder, "IN_PROGRESS");
+    Alert.alert(
+      "Transferred to Repair",
+      `${selectedOrder.number} was transferred to the repair system.`,
     );
     setSelectedOrderId(null);
   };
@@ -940,9 +1346,16 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
   const statusStyle = (status: WorkOrderStatus) => {
     switch (status) {
       case "Completed":
+      case "Done":
         return styles.statusCompleted;
       case "In Progress":
         return styles.statusInProgress;
+      case "For Verification":
+        return styles.statusVerification;
+      case "Rejected":
+        return styles.statusRejected;
+      case "For Repair":
+        return styles.statusRepair;
       case "Overdue":
         return styles.statusOverdue;
       default:
@@ -956,7 +1369,39 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
     </View>
   );
 
+  const verificationMessage = (order: WorkOrder): string | null => {
+    if (order.approvalStatus === "Rejected") {
+      return "Rejected, execute or check your list again";
+    }
+    if (order.approvalStatus === "For Repair") {
+      return "Already recommended in repair";
+    }
+    if (order.approvalStatus === "Unverified") {
+      return "Pending Verification";
+    }
+    return null;
+  };
+
+  const inspectionDecisionLabel = (remark: InspectionRemark): string => {
+    if (remark === "Verified") return "Approve Inspection";
+    if (remark === "Rejected" || remark === "For Repair") {
+      return "Disapproved Inspection";
+    }
+    return "";
+  };
+
+  const inspectionResultLabel = (remark: InspectionRemark): string => {
+    const decision = inspectionDecisionLabel(remark);
+    return decision ? `${remark} - ${decision}` : remark;
+  };
+
   if (selectedOrder) {
+    const mechanicOrderLocked =
+      isMechanicRole &&
+      (selectedOrder.mechanicSubmitted ||
+        selectedOrder.approvalStatus === "Verified" ||
+        selectedOrder.status === "Done") &&
+      selectedOrder.approvalStatus !== "Rejected";
     const changedExecutionItems = selectedOrder.executionItems.filter(
       (item) => item.status === "changed",
     );
@@ -1104,6 +1549,7 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
                         ].map((option) => (
                           <TouchableOpacity
                             key={option.key}
+                            disabled={mechanicOrderLocked}
                             style={[
                               styles.pillButton,
                               item.status === option.key && {
@@ -1132,6 +1578,7 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
                       </View>
                       <TextInput
                         style={styles.noteInput}
+                        editable={!mechanicOrderLocked}
                         placeholder="Add note"
                         placeholderTextColor="#94a3b8"
                         value={item.note}
@@ -1155,6 +1602,7 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
                   </Text>
                   <TouchableOpacity
                     style={styles.dropdownButton}
+                    disabled={mechanicOrderLocked}
                     onPress={() =>
                       setShowChiefMechanicOptions((value) => !value)
                     }
@@ -1165,7 +1613,7 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
                   </TouchableOpacity>
                   {showChiefMechanicOptions && (
                     <View style={styles.dropdownMenu}>
-                      {chiefMechanicOptions.map((option) => (
+                      {availableChiefMechanics.map((option) => (
                         <TouchableOpacity
                           key={option}
                           style={styles.dropdownOption}
@@ -1214,6 +1662,7 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
                         <Text style={styles.partsLabel}>Parts Used</Text>
                         <TextInput
                           style={styles.partsInput}
+                          editable={!mechanicOrderLocked}
                           value={partEntry.partsUsed}
                           onChangeText={(text) =>
                             updatePartDetailField(
@@ -1233,6 +1682,7 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
                         </Text>
                         <TextInput
                           style={styles.partsInput}
+                          editable={!mechanicOrderLocked}
                           value={partEntry.quantity}
                           keyboardType="numeric"
                           onChangeText={(text) =>
@@ -1253,6 +1703,7 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
                         <Text style={styles.partsLabel}>Material Cost</Text>
                         <TextInput
                           style={styles.partsInput}
+                          editable={!mechanicOrderLocked}
                           value={partEntry.materialCost}
                           keyboardType="decimal-pad"
                           onChangeText={(text) =>
@@ -1271,6 +1722,7 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
                     <Text style={styles.partsLabel}>Photos / Attachments</Text>
                     <TextInput
                       style={styles.partsInput}
+                      editable={!mechanicOrderLocked}
                       value={partEntry.attachmentName}
                       onChangeText={(text) =>
                         updatePartDetailField(
@@ -1285,6 +1737,7 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
                     />
                     <TextInput
                       style={styles.partsInput}
+                      editable={!mechanicOrderLocked}
                       value={partEntry.attachmentSizeMb}
                       keyboardType="numeric"
                       onChangeText={(text) =>
@@ -1300,6 +1753,7 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
                     />
                     <TouchableOpacity
                       style={styles.uploadButton}
+                      disabled={mechanicOrderLocked}
                       onPress={() =>
                         addAttachmentToItem(selectedOrder.id, item.id)
                       }
@@ -1352,6 +1806,7 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
                   </Text>
                   <TouchableOpacity
                     style={styles.dropdownButton}
+                    disabled={mechanicOrderLocked}
                     onPress={() =>
                       setShowChiefMechanicOptions((value) => !value)
                     }
@@ -1362,7 +1817,7 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
                   </TouchableOpacity>
                   {showChiefMechanicOptions && (
                     <View style={styles.dropdownMenu}>
-                      {chiefMechanicOptions.map((option) => (
+                      {availableChiefMechanics.map((option) => (
                         <TouchableOpacity
                           key={option}
                           style={styles.dropdownOption}
@@ -1379,6 +1834,92 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
                     </View>
                   )}
                 </View>
+              </View>
+            </View>
+          )}
+
+          {/* Chief mechanic inspection */}
+          {activeStep === "inspection" && isChiefMechanicRole && (
+            <View style={styles.detailCard}>
+              <Text style={styles.sectionTitle}>Inspection Checklist</Text>
+              <Text style={styles.sectionText}>
+                Verify the execution submitted by {selectedOrder.mechanic}.
+              </Text>
+              {selectedOrder.inspectionItems.map((item) => (
+                <View key={item.id} style={styles.checklistItemCard}>
+                  <Text style={styles.checklistItemLabel}>{item.label}</Text>
+                  <View style={styles.pillButtonRow}>
+                    {[
+                      { key: "pass" as const, label: "Pass" },
+                      { key: "fail" as const, label: "Fail" },
+                    ].map((option) => (
+                      <TouchableOpacity
+                        key={option.key}
+                        style={[
+                          styles.pillButton,
+                          item.status === option.key && {
+                            backgroundColor:
+                              option.key === "pass" ? "#15803d" : "#b91c1c",
+                          },
+                        ]}
+                        onPress={() =>
+                          updateInspectionStatus(
+                            selectedOrder.id,
+                            item.id,
+                            option.key,
+                          )
+                        }
+                      >
+                        <Text
+                          style={[
+                            styles.pillButtonText,
+                            item.status === option.key &&
+                              styles.pillButtonTextActive,
+                          ]}
+                        >
+                          {option.label}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                  <TextInput
+                    style={styles.noteInput}
+                    placeholder="Add inspection remarks"
+                    placeholderTextColor="#94a3b8"
+                    value={item.note}
+                    onChangeText={(text) =>
+                      updateInspectionNote(selectedOrder.id, item.id, text)
+                    }
+                  />
+                </View>
+              ))}
+              <View style={styles.chiefMechanicSection}>
+                <Text style={styles.sectionTitle}>
+                  Inspection Results Approval / Verification
+                </Text>
+                <View style={styles.inspectionStatusBanner}>
+                  <Text style={styles.inspectionStatusLabel}>
+                    Inspection Result
+                  </Text>
+                  <Text style={styles.inspectionStatusValue}>
+                    {inspectionResultLabel(
+                      getAutomaticInspectionRemark(
+                        selectedOrder.inspectionItems,
+                      ),
+                    )}
+                  </Text>
+                </View>
+                <Text style={styles.dropdownLabel}>Inspection Remarks</Text>
+                <TextInput
+                  style={styles.remarksInput}
+                  placeholder="Add inspection remarks"
+                  placeholderTextColor="#94a3b8"
+                  multiline
+                  value={selectedOrder.inspectorRemarks}
+                  onChangeText={(text) =>
+                    updateInspectorRemarks(selectedOrder.id, text)
+                  }
+                />
               </View>
             </View>
           )}
@@ -1414,38 +1955,28 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
             <Text style={styles.bottomButtonPrimaryText}>Next</Text>
           </TouchableOpacity>
           <TouchableOpacity
-            style={styles.bottomButtonPrimary}
-            onPress={() => handleCompleteOrder()}
+            style={[
+              styles.bottomButtonPrimary,
+              styles.inspectionActionButton,
+              getAutomaticInspectionRemark(selectedOrder.inspectionItems) ===
+                "Unverified" && styles.inspectionActionDisabled,
+            ]}
+            onPress={handleInspectionAction}
             disabled={
-              !(
-                selectedOrder.executionItems.length > 0 &&
-                selectedOrder.executionItems.every(
-                  (item) => item.status !== "pending",
-                ) &&
-                selectedOrder.executionItems
-                  .filter((item) => item.status === "changed")
-                  .every((item) => {
-                    const partEntry = selectedOrder.partDetails[item.id] ?? {
-                      partsUsed: "",
-                      quantity: "",
-                      materialCost: "",
-                      attachments: [],
-                      attachmentName: "",
-                      attachmentSizeMb: "",
-                    };
-
-                    return (
-                      partEntry.partsUsed.trim().length > 0 &&
-                      partEntry.quantity.trim().length > 0 &&
-                      partEntry.materialCost.trim().length > 0 &&
-                      partEntry.attachments.length > 0
-                    );
-                  }) &&
-                selectedOrder.chiefMechanic.trim().length > 0
-              )
+              (isChiefMechanicRole &&
+                getAutomaticInspectionRemark(selectedOrder.inspectionItems) ===
+                  "Unverified") ||
+              (isMechanicRole &&
+                (mechanicOrderLocked ||
+                  (selectedOrder.mechanicSubmitted &&
+                    selectedOrder.approvalStatus !== "Rejected")))
             }
           >
-            <Text style={styles.bottomButtonPrimaryText}>Mark as Complete</Text>
+            <Text style={styles.bottomButtonPrimaryText}>
+              {getInspectionActionLabel(
+                getAutomaticInspectionRemark(selectedOrder.inspectionItems),
+              )}
+            </Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -1644,6 +2175,12 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     alignItems: "center",
   },
+  verificationMessage: {
+    color: "#92400e",
+    fontSize: 12,
+    fontWeight: "700",
+    marginTop: 8,
+  },
   orderNumber: { fontSize: 16, fontWeight: "800", color: "#1a1f6e" },
   statusBadge: {
     paddingHorizontal: 14,
@@ -1653,6 +2190,9 @@ const styles = StyleSheet.create({
   },
   statusPending: { backgroundColor: "#f8f8ff", borderColor: "#d9d6ef" },
   statusInProgress: { backgroundColor: "#dbeafe", borderColor: "#7dd3fc" },
+  statusVerification: { backgroundColor: "#fef3c7", borderColor: "#f59e0b" },
+  statusRejected: { backgroundColor: "#fee2e2", borderColor: "#fca5a5" },
+  statusRepair: { backgroundColor: "#ffedd5", borderColor: "#fdba74" },
   statusOverdue: { backgroundColor: "#fef5e7", borderColor: "#fcd34d" },
   statusCompleted: { backgroundColor: "#dcfce7", borderColor: "#86efac" },
   statusBadgeText: { fontSize: 11, fontWeight: "700", color: "#1a1f6e" },
@@ -2093,6 +2633,26 @@ const styles = StyleSheet.create({
     fontSize: 13,
     textAlignVertical: "top",
   },
+  inspectionStatusBanner: {
+    borderWidth: 1,
+    borderColor: "#cbd5e1",
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: "#f8fafc",
+    gap: 3,
+  },
+  inspectionStatusLabel: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: "#64748b",
+    textTransform: "uppercase",
+  },
+  inspectionStatusValue: {
+    fontSize: 15,
+    fontWeight: "800",
+    color: "#1a1f6e",
+  },
 
   resultsRow: {
     flexDirection: "row",
@@ -2174,5 +2734,28 @@ const styles = StyleSheet.create({
     color: "#ffffff",
     fontWeight: "700",
     fontSize: 13,
+    textAlign: "center",
+  },
+  inspectionActionButton: {
+    flex: 1.35,
+    paddingHorizontal: 8,
+  },
+  inspectionActionDisabled: {
+    backgroundColor: "#94a3b8",
+  },
+  inspectionDecisionFooter: {
+    flex: 1.25,
+    minHeight: 44,
+    justifyContent: "center",
+    alignItems: "center",
+    borderRadius: 10,
+    paddingHorizontal: 6,
+    backgroundColor: "#1a1f6e",
+  },
+  inspectionDecisionFooterText: {
+    color: "#ffffff",
+    fontWeight: "800",
+    fontSize: 12,
+    textAlign: "center",
   },
 });

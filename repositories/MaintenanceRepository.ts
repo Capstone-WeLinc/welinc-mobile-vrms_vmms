@@ -49,12 +49,12 @@ export class MaintenanceRepository {
     if (vehicleId) {
       return this.db.getAllAsync<MaintenanceSchedule>(
         `SELECT * FROM maintenance_schedules
-         WHERE vehicleId = ? AND deletedAt IS NULL ORDER BY startReferenceDate IS NULL, startReferenceDate ASC`,
+         WHERE vehicleId = ? AND deletedAt IS NULL ORDER BY startReferenceDate ASC`,
         vehicleId,
       );
     }
     return this.db.getAllAsync<MaintenanceSchedule>(
-      "SELECT * FROM maintenance_schedules WHERE deletedAt IS NULL ORDER BY startReferenceDate IS NULL, startReferenceDate ASC",
+      "SELECT * FROM maintenance_schedules WHERE deletedAt IS NULL ORDER BY startReferenceDate ASC",
     );
   }
 
@@ -63,7 +63,7 @@ export class MaintenanceRepository {
   ): Promise<MaintenanceSchedule[]> {
     return this.db.getAllAsync<MaintenanceSchedule>(
       `SELECT * FROM maintenance_schedules
-       WHERE assignedMechanic = ? AND deletedAt IS NULL ORDER BY startReferenceDate IS NULL, startReferenceDate ASC`,
+       WHERE assignedMechanic = ? AND deletedAt IS NULL ORDER BY startReferenceDate ASC`,
       mechanicName,
     );
   }
@@ -73,8 +73,26 @@ export class MaintenanceRepository {
   ): Promise<MaintenanceSchedule[]> {
     return this.db.getAllAsync<MaintenanceSchedule>(
       `SELECT * FROM maintenance_schedules
-       WHERE status = ? AND deletedAt IS NULL ORDER BY startReferenceDate IS NULL, startReferenceDate ASC`,
+       WHERE status = ? AND deletedAt IS NULL ORDER BY startReferenceDate ASC`,
       status,
+    );
+  }
+
+  async updateWorkOrderProgress(
+    scheduleId: string,
+    workOrderProgress: string,
+    status?: string,
+  ): Promise<void> {
+    await this.db.runAsync(
+      `UPDATE maintenance_schedules
+       SET workOrderProgress = ?,
+           status = COALESCE(?, status),
+           updatedAt = ?
+       WHERE id = ?`,
+      workOrderProgress,
+      status ?? null,
+      new Date().toISOString(),
+      scheduleId,
     );
   }
 
@@ -110,7 +128,12 @@ export class MaintenanceRepository {
              intervalType = excluded.intervalType,
              startReferenceDate = excluded.startReferenceDate,
              previousScheduleId = excluded.previousScheduleId,
-             workOrderProgress = excluded.workOrderProgress,
+             workOrderProgress = CASE
+               WHEN excluded.workOrderProgress IS NULL
+                 AND maintenance_schedules.workOrderProgress IS NOT NULL
+               THEN maintenance_schedules.workOrderProgress
+               ELSE excluded.workOrderProgress
+             END,
              deletedAt = excluded.deletedAt,
              updatedAt = excluded.updatedAt
            WHERE excluded.updatedAt >= maintenance_schedules.updatedAt

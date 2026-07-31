@@ -3,6 +3,7 @@ import * as SQLite from "expo-sqlite";
 import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   Image,
   StyleSheet,
   Text,
@@ -87,6 +88,13 @@ export default function App() {
     }
   };
 
+  const confirmLogout = () => {
+    Alert.alert("Log out", "Are you sure you want to log out?", [
+      { text: "Cancel", style: "cancel" },
+      { text: "Log out", style: "destructive", onPress: () => void logout() },
+    ]);
+  };
+
   const navigateTo = (screen: "dashboard" | "work-orders") => {
     setActiveScreen(screen);
   };
@@ -130,9 +138,7 @@ export default function App() {
           <TouchableOpacity
             style={styles.logoutButton}
             onPress={() => void logout()}
-          >
-            <Text style={styles.logoutButtonText}>Log out</Text>
-          </TouchableOpacity>
+          />
         </View>
       );
     }
@@ -151,10 +157,7 @@ export default function App() {
             </View>
           </View>
 
-          <TouchableOpacity
-            style={styles.logoutButton}
-            onPress={() => void logout()}
-          >
+          <TouchableOpacity style={styles.logoutButton} onPress={confirmLogout}>
             <Text style={styles.logoutButtonText}>Log out</Text>
           </TouchableOpacity>
         </View>
