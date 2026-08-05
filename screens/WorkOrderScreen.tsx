@@ -1,5 +1,7 @@
-import { useState, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
+  ActivityIndicator,
+  Alert,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -7,7 +9,6 @@ import {
   TextInput,
   TouchableOpacity,
   View,
-  Alert,
 } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import * as DocumentPicker from "expo-document-picker";
@@ -17,6 +18,10 @@ import type {
   MobileAccessRole,
 } from "../services/AuthService";
 import { API_BASE_URL, AuthService } from "../services/AuthService";
+import {
+  WorkOrderAnalyticsService,
+  type WorkOrderRecommendationsResponse,
+} from "../services/WorkOrderAnalyticsService";
 import { getDatabase } from "../database/database";
 import { ChecklistRepository } from "../repositories/ChecklistRepository";
 import { MaintenanceRepository } from "../repositories/MaintenanceRepository";
@@ -360,6 +365,47 @@ const resolveChecklistTemplate = async (
   };
 };
 
+const parseAiExecutionSections = (text: string) => {
+  if (!text) return [];
+
+  const lines = text.split(/\r?\n/);
+  const result: { title: string; items: string[] }[] = [];
+  let current: { title: string; items: string[] } | null = null;
+
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
+
+    const isHeading =
+      /^(?:\#+\s*|\*\*\d+[\.\)]|\d+[\.\)])\s*/.test(line) ||
+      (line.endsWith(":") && line.length < 80 && !line.includes("•"));
+
+    if (isHeading) {
+      if (current && current.items.length > 0) {
+        result.push(current);
+      }
+      const cleanTitle = line
+        .replace(/^[#*\d\.\)\s]+/, "")
+        .replace(/[:*]+$/, "")
+        .trim();
+      current = { title: cleanTitle || line, items: [] };
+    } else if (current) {
+      current.items.push(line.replace(/^[-*•]\s*/, ""));
+    } else {
+      current = {
+        title: "Execution Advisory",
+        items: [line.replace(/^[-*•]\s*/, "")],
+      };
+    }
+  }
+
+  if (current && current.items.length > 0) {
+    result.push(current);
+  }
+
+  return result;
+};
+
 interface WorkOrderScreenProps {
   accessRole: MobileAccessRole;
   user: AuthenticatedUser;
@@ -381,6 +427,10 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
   const [chiefMechanicOptions, setChiefMechanicOptions] = useState<string[]>(
     [],
   );
+
+  const [aiAdvisoryLoading, setAiAdvisoryLoading] = useState(false);
+  const [aiRecommendations, setAiRecommendations] =
+    useState<WorkOrderRecommendationsResponse | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -655,6 +705,32 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
     };
   }, [selectedOrderId]);
 
+  const loadAiAdvisory = useCallback(async (order: WorkOrder) => {
+    setAiAdvisoryLoading(true);
+    try {
+      const analyticsService = new WorkOrderAnalyticsService();
+      const result = await analyticsService.getWorkOrderRecommendations(
+        order.id,
+        order.maintenanceType,
+        order.plate,
+        order.executionItems.map((item) => ({ text: item.label })),
+      );
+      setAiRecommendations(result);
+    } catch (err) {
+      console.error("[WorkOrderScreen] Failed to load AI recommendations", err);
+    } finally {
+      setAiAdvisoryLoading(false);
+    }
+  }, []);
+
+  const selectedOrder =
+    workOrders.find((order) => order.id === selectedOrderId) ?? null;
+
+  useEffect(() => {
+    setAiRecommendations(null);
+    setAiAdvisoryLoading(false);
+  }, [selectedOrderId]);
+
   const knownChiefMechanics = workOrders
     .map((order) => order.chiefMechanic.trim())
     .filter(Boolean);
@@ -751,9 +827,6 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
 
     return matchesQuery;
   });
-
-  const selectedOrder =
-    workOrders.find((order) => order.id === selectedOrderId) ?? null;
 
   const groupedOrders = filteredOrders.reduce<Record<string, WorkOrder[]>>(
     (groups, order) => {
@@ -1395,6 +1468,248 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
     return decision ? `${remark} - ${decision}` : remark;
   };
 
+  const ensureFourProcedureSections = (
+    rawText: string | undefined,
+    maintenanceType: string,
+    executionItems: ExecutionItem[],
+  ): Array<{ title: string; items: string[] }> => {
+    const parsed = rawText ? parseAiExecutionSections(rawText) : [];
+    if (parsed.length >= 2) {
+      return parsed;
+    }
+
+    const itemNames =
+      executionItems.map((i) => i.label).join(", ") || maintenanceType;
+
+    return [
+      {
+        title: "SAFETY & PPE REQUIREMENTS",
+        items: [
+          `Put on safety glasses, heat-resistant mechanic gloves, and steel-toe boots before servicing ${maintenanceType}.`,
+          `Ensure engine has cooled sufficiently to prevent severe burns before draining fluids or handling hot parts.`,
+        ],
+      },
+      {
+        title: "DIAGNOSTIC TOOLS & PARTS NEEDED",
+        items: [
+          `Gather floor jack, jack stands, oil filter wrench, drain pan, torque wrench, and diagnostic tools for ${maintenanceType}.`,
+          `Obtain correct OEM-spec engine oil/fluids, new filter, and replacement crush washer.`,
+        ],
+      },
+      {
+        title: "ITEM EXECUTION INSTRUCTIONS",
+        items: [
+          `Safely elevate and support vehicle, then drain fluids and remove worn components relevant to ${itemNames}.`,
+          `Install new parts/filters, refill to proper fluid capacity, and reset maintenance light via dash or OBD tool.`,
+        ],
+      },
+      {
+        title: "QUALITY CONTROL SIGN-OFF",
+        items: [
+          `Lower vehicle and run engine briefly, inspecting underneath for leaks around drain plug and filter.`,
+          `Verify fluid level on dipstick, ensure zero diagnostic error codes, and confirm sign-off.`,
+        ],
+      },
+    ];
+  };
+
+  const renderAiAdvisoryCard = () => {
+    if (!selectedOrder) return null;
+
+    if (!aiRecommendations && !aiAdvisoryLoading) {
+      return (
+        <View style={styles.aiWebPromptContainer}>
+          <View style={styles.aiWebPromptBadge}>
+            <Text style={styles.aiWebPromptIcon}>🧠</Text>
+          </View>
+          <View style={styles.aiWebPromptTextGroup}>
+            <Text style={styles.aiWebPromptTitle}>
+              AI Work Order Recommendations & Procedure
+            </Text>
+            <Text style={styles.aiWebPromptSubtext}>
+              Tap below to analyze task requirements for{" "}
+              <Text style={{ fontWeight: "700", color: "#0f172a" }}>
+                {selectedOrder.maintenanceType}
+              </Text>{" "}
+              and generate AI execution procedures and technical suggestions.
+            </Text>
+          </View>
+          <TouchableOpacity
+            style={styles.aiWebGenerateButton}
+            onPress={() => void loadAiAdvisory(selectedOrder)}
+          >
+            <Text style={styles.aiWebGenerateButtonText}>
+              ✨ Generate AI Recommendations
+            </Text>
+          </TouchableOpacity>
+        </View>
+      );
+    }
+
+    const procedureCards = ensureFourProcedureSections(
+      aiRecommendations?.aiRecommendations,
+      selectedOrder.maintenanceType,
+      selectedOrder.executionItems,
+    );
+
+    const checklistSteps =
+      aiRecommendations?.checklist && aiRecommendations.checklist.length > 0
+        ? aiRecommendations.checklist
+        : selectedOrder.executionItems.length > 0
+          ? selectedOrder.executionItems.map((item, idx) => ({
+              stepNumber: idx + 1,
+              title: item.label,
+              description: `Follow OEM service guidelines to inspect, service, or test ${item.label}. Verify proper torque, cleanliness, and operation.`,
+              priority: idx < 2 ? "HIGH" : idx < 4 ? "MEDIUM" : "NORMAL",
+            }))
+          : [
+              {
+                stepNumber: 1,
+                title: "Pre-Work Safety & Visual Inspection",
+                description:
+                  "Inspect workspace, secure vehicle, check for leaks/damage around area.",
+                priority: "HIGH",
+              },
+              {
+                stepNumber: 2,
+                title: "Component Disassembly & Inspection",
+                description: `Access and inspect components relevant to ${selectedOrder.maintenanceType}.`,
+                priority: "HIGH",
+              },
+              {
+                stepNumber: 3,
+                title: "Part Replacement / Fluid Service",
+                description:
+                  "Replace worn parts or fluids according to VMMS service manual standards.",
+                priority: "HIGH",
+              },
+              {
+                stepNumber: 4,
+                title: "Torque & Fastener Verification",
+                description:
+                  "Verify all bolts, fittings, and clamps are torqued to OEM specifications.",
+                priority: "MEDIUM",
+              },
+              {
+                stepNumber: 5,
+                title: "Post-Service Test & Diagnostics",
+                description:
+                  "Run engine/system test, verify zero leakage or error codes.",
+                priority: "MEDIUM",
+              },
+              {
+                stepNumber: 6,
+                title: "Sign-off & Work Order Logging",
+                description:
+                  "Log completed tasks, parts used, and updated odometer reading.",
+                priority: "LOW",
+              },
+            ];
+
+    return (
+      <View style={styles.aiWebCardContainer}>
+        {/* Top Header Bar */}
+        <View style={styles.aiWebHeaderBar}>
+          <View style={styles.aiWebHeaderLeft}>
+            <View style={styles.aiWebSparkleBadge}>
+              <Text style={styles.aiWebSparkleIcon}>✨</Text>
+            </View>
+            <View style={styles.aiWebHeaderTextGroup}>
+              <Text style={styles.aiWebTitle}>
+                AI Execution Recommendations & Procedure
+              </Text>
+              <Text style={styles.aiWebSubtitle}>
+                AI-driven technical procedure suggestions, required tools, and
+                execution steps for {selectedOrder.maintenanceType}.
+              </Text>
+            </View>
+          </View>
+          <TouchableOpacity
+            style={styles.aiWebReGenerateButton}
+            onPress={() => void loadAiAdvisory(selectedOrder)}
+            disabled={aiAdvisoryLoading}
+          >
+            {aiAdvisoryLoading ? (
+              <ActivityIndicator size="small" color="#ffffff" />
+            ) : (
+              <Text style={styles.aiWebReGenerateText}>
+                ✨ Re-Generate Recommendations
+              </Text>
+            )}
+          </TouchableOpacity>
+        </View>
+
+        {aiAdvisoryLoading ? (
+          <View style={styles.aiWebLoadingBlock}>
+            <ActivityIndicator color="#1a1f6e" size="small" />
+            <Text style={styles.aiWebLoadingText}>
+              Analyzing vehicle diagnostics, checklist requirements, and
+              technical procedures for {selectedOrder.maintenanceType}...
+            </Text>
+          </View>
+        ) : (
+          <View style={styles.aiWebBody}>
+            {/* Step-by-Step Technical Execution Suggestions */}
+            <View style={styles.aiWebSectionBlock}>
+              <View style={styles.aiWebSectionHeaderRow}>
+                <Text style={styles.aiWebSectionHeaderIcon}>⚡</Text>
+                <Text style={styles.aiWebSectionHeaderTitle}>
+                  STEP-BY-STEP EXECUTION SUGGESTIONS
+                </Text>
+              </View>
+              <View style={styles.aiWebStepList}>
+                {checklistSteps.map((step) => (
+                  <View key={step.stepNumber} style={styles.aiWebStepCard}>
+                    <View style={styles.aiWebStepLeft}>
+                      <View style={styles.aiWebStepCircle}>
+                        <Text style={styles.aiWebStepCircleText}>
+                          {step.stepNumber}
+                        </Text>
+                      </View>
+                      <View style={styles.aiWebStepContent}>
+                        <Text style={styles.aiWebStepTitle}>
+                          {step.title}
+                        </Text>
+                        <Text style={styles.aiWebStepDesc}>
+                          {step.description}
+                        </Text>
+                      </View>
+                    </View>
+                    <View style={styles.aiWebPriorityBadge}>
+                      <Text style={styles.aiWebPriorityText}>
+                        {step.priority || "NORMAL"}
+                      </Text>
+                    </View>
+                  </View>
+                ))}
+              </View>
+            </View>
+
+            {/* 4 Procedure Cards (2x2 Grid / Stack) */}
+            <View style={styles.aiWebGrid}>
+              {procedureCards.map((sec, idx) => (
+                <View key={idx} style={styles.aiWebGridCard}>
+                  <View style={styles.aiWebGridCardHeader}>
+                    <Text style={styles.aiWebGridCardIcon}>🔧</Text>
+                    <Text style={styles.aiWebGridCardTitle}>{sec.title}</Text>
+                  </View>
+                  <View style={styles.aiWebGridCardBody}>
+                    {sec.items.map((bullet, bulletIdx) => (
+                      <View key={bulletIdx} style={styles.aiWebBulletRow}>
+                        <Text style={styles.aiWebBulletDot}>•</Text>
+                        <Text style={styles.aiWebBulletText}>{bullet}</Text>
+                      </View>
+                    ))}
+                  </View>
+                </View>
+              ))}
+            </View>
+          </View>
+        )}
+      </View>
+    );
+  };
+
   if (selectedOrder) {
     const mechanicOrderLocked =
       isMechanicRole &&
@@ -1454,6 +1769,7 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
           {/* Step 1: Details */}
           {activeStep === "details" && (
             <>
+              {renderAiAdvisoryCard()}
               {/* Maintenance Schedule Details */}
               <View style={styles.detailCard}>
                 <Text style={styles.sectionTitle}>
@@ -2757,5 +3073,436 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     fontSize: 12,
     textAlign: "center",
+  },
+
+  /* AI Features Styles */
+  headerRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 12,
+  },
+  aiInsightsHeaderButton: {
+    backgroundColor: "#1a1f6e",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+  },
+  aiInsightsHeaderButtonText: {
+    color: "#ffffff",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  aiCardContainer: {
+    backgroundColor: "#f0fdf4",
+    borderColor: "#bbf7d0",
+    borderWidth: 1.5,
+    borderRadius: 14,
+    padding: 14,
+    marginBottom: 14,
+    gap: 10,
+  },
+  aiCardHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  aiCardTitle: {
+    fontSize: 15,
+    fontWeight: "800",
+    color: "#15803d",
+  },
+  aiRefreshButton: {
+    backgroundColor: "#16a34a",
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
+  },
+  aiRefreshButtonText: {
+    color: "#ffffff",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  aiLoadingBlock: {
+    paddingVertical: 14,
+    alignItems: "center",
+    gap: 8,
+  },
+  aiLoadingText: {
+    fontSize: 12,
+    color: "#166534",
+    fontWeight: "600",
+  },
+  aiCardContent: {
+    gap: 10,
+  },
+  aiAdvisoryText: {
+    fontSize: 13,
+    color: "#166534",
+    lineHeight: 18,
+    fontWeight: "500",
+  },
+  aiSectionsContainer: {
+    gap: 8,
+  },
+  aiSectionCard: {
+    backgroundColor: "#ffffff",
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#bbf7d0",
+    padding: 10,
+    gap: 4,
+  },
+  aiSectionTitle: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: "#15803d",
+    textTransform: "uppercase",
+    marginBottom: 4,
+  },
+  aiBulletRow: {
+    flexDirection: "row",
+    gap: 6,
+    alignItems: "flex-start",
+  },
+  aiBulletDot: {
+    fontSize: 14,
+    color: "#16a34a",
+    fontWeight: "700",
+  },
+  aiBulletText: {
+    fontSize: 12,
+    color: "#334155",
+    lineHeight: 16,
+    flex: 1,
+  },
+  aiChecklistSection: {
+    marginTop: 8,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderColor: "#dcfce7",
+    gap: 8,
+  },
+  aiChecklistHeaderRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 8,
+  },
+  aiChecklistTitle: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#15803d",
+    flex: 1,
+  },
+  aiStepItem: {
+    flexDirection: "row",
+    gap: 8,
+    backgroundColor: "#ffffff",
+    padding: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#dcfce7",
+  },
+  aiStepNumber: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: "#15803d",
+  },
+  aiStepTextContainer: {
+    flex: 1,
+    gap: 2,
+  },
+  aiStepTitle: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#0f172a",
+  },
+  aiStepPriority: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: "#dc2626",
+  },
+  aiStepDesc: {
+    fontSize: 12,
+    color: "#475569",
+    lineHeight: 16,
+  },
+
+  /* Screenshot-Matched Gemini AI UI Styles */
+  aiWebCardContainer: {
+    backgroundColor: "#ffffff",
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    marginBottom: 16,
+    overflow: "hidden",
+    shadowColor: "#000",
+    shadowOpacity: 0.05,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 3 },
+  },
+  aiWebHeaderBar: {
+    backgroundColor: "#f8fafc",
+    borderBottomWidth: 1,
+    borderColor: "#f1f5f9",
+    padding: 16,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 12,
+    flexWrap: "wrap",
+  },
+  aiWebHeaderLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    flex: 1,
+    minWidth: 220,
+  },
+  aiWebSparkleBadge: {
+    width: 40,
+    height: 40,
+    borderRadius: 14,
+    backgroundColor: "#eff6ff",
+    borderWidth: 1,
+    borderColor: "#dbeafe",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  aiWebSparkleIcon: {
+    fontSize: 18,
+  },
+  aiWebHeaderTextGroup: {
+    flex: 1,
+    gap: 2,
+  },
+  aiWebTitle: {
+    fontSize: 15,
+    fontWeight: "800",
+    color: "#0f172a",
+  },
+  aiWebSubtitle: {
+    fontSize: 12,
+    color: "#64748b",
+    lineHeight: 16,
+  },
+  aiWebReGenerateButton: {
+    backgroundColor: "#1a1f6e",
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    shadowColor: "#1a1f6e",
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 2 },
+  },
+  aiWebReGenerateText: {
+    color: "#ffffff",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  aiWebLoadingBlock: {
+    padding: 24,
+    alignItems: "center",
+    gap: 10,
+  },
+  aiWebLoadingText: {
+    fontSize: 13,
+    color: "#475569",
+    textAlign: "center",
+    lineHeight: 18,
+    fontWeight: "500",
+  },
+  aiWebBody: {
+    padding: 16,
+    gap: 16,
+  },
+  aiWebSectionBlock: {
+    gap: 10,
+  },
+  aiWebSectionHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginBottom: 4,
+  },
+  aiWebSectionHeaderIcon: {
+    fontSize: 14,
+  },
+  aiWebSectionHeaderTitle: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: "#2563eb",
+    letterSpacing: 0.5,
+  },
+  aiWebStepList: {
+    gap: 10,
+  },
+  aiWebStepCard: {
+    backgroundColor: "#f8fafc",
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    padding: 14,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: 12,
+  },
+  aiWebStepLeft: {
+    flexDirection: "row",
+    gap: 12,
+    flex: 1,
+  },
+  aiWebStepCircle: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: "#dbeafe",
+    justifyContent: "center",
+    alignItems: "center",
+    marginTop: 1,
+  },
+  aiWebStepCircleText: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: "#2563eb",
+  },
+  aiWebStepContent: {
+    flex: 1,
+    gap: 3,
+  },
+  aiWebStepTitle: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#0f172a",
+  },
+  aiWebStepDesc: {
+    fontSize: 12,
+    color: "#475569",
+    lineHeight: 17,
+  },
+  aiWebPriorityBadge: {
+    backgroundColor: "#dbeafe",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+    alignSelf: "flex-start",
+  },
+  aiWebPriorityText: {
+    fontSize: 10,
+    fontWeight: "800",
+    color: "#1d4ed8",
+    letterSpacing: 0.5,
+  },
+  aiWebGrid: {
+    gap: 12,
+  },
+  aiWebGridCard: {
+    backgroundColor: "#f0f9ff",
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#e0f2fe",
+    padding: 14,
+    gap: 8,
+  },
+  aiWebGridCardHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  aiWebGridCardIcon: {
+    fontSize: 14,
+  },
+  aiWebGridCardTitle: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: "#0284c7",
+    letterSpacing: 0.5,
+  },
+  aiWebGridCardBody: {
+    gap: 6,
+  },
+  aiWebBulletRow: {
+    flexDirection: "row",
+    gap: 6,
+    alignItems: "flex-start",
+  },
+  aiWebBulletDot: {
+    fontSize: 14,
+    color: "#0284c7",
+    fontWeight: "700",
+  },
+  aiWebBulletText: {
+    fontSize: 12,
+    color: "#334155",
+    lineHeight: 17,
+    flex: 1,
+  },
+  /* Manual Generate Prompt Styles */
+  aiWebPromptContainer: {
+    backgroundColor: "#ffffff",
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    padding: 24,
+    marginBottom: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 12,
+    shadowColor: "#000",
+    shadowOpacity: 0.05,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 3 },
+  },
+  aiWebPromptBadge: {
+    width: 52,
+    height: 52,
+    borderRadius: 18,
+    backgroundColor: "#eff6ff",
+    borderWidth: 1,
+    borderColor: "#dbeafe",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  aiWebPromptIcon: {
+    fontSize: 24,
+  },
+  aiWebPromptTextGroup: {
+    alignItems: "center",
+    gap: 4,
+    maxWidth: 320,
+  },
+  aiWebPromptTitle: {
+    fontSize: 16,
+    fontWeight: "800",
+    color: "#0f172a",
+    textAlign: "center",
+  },
+  aiWebPromptSubtext: {
+    fontSize: 12,
+    color: "#64748b",
+    textAlign: "center",
+    lineHeight: 18,
+  },
+  aiWebGenerateButton: {
+    backgroundColor: "#1a1f6e",
+    borderRadius: 14,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    marginTop: 4,
+    shadowColor: "#1a1f6e",
+    shadowOpacity: 0.25,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 3 },
+  },
+  aiWebGenerateButtonText: {
+    color: "#ffffff",
+    fontSize: 13,
+    fontWeight: "700",
   },
 });
