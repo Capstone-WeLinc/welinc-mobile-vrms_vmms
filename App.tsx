@@ -16,6 +16,7 @@ import { clearDatabase, initializeDatabase } from "./database/database";
 import { DATABASE_NAME } from "./database/tables";
 import { DashboardScreen } from "./screens/DashboardScreen";
 import { LoginScreen } from "./screens/LoginScreen";
+import { SplashScreen } from "./screens/SplashScreen";
 import { WorkOrderScreen } from "./screens/WorkOrderScreen";
 import {
   API_BASE_URL,
@@ -40,6 +41,7 @@ export default function App() {
   >("loading");
   const [startupError, setStartupError] = useState<string | null>(null);
   const [user, setUser] = useState<AuthenticatedUser | null>(null);
+  const [showSplash, setShowSplash] = useState(true);
   const [activeScreen, setActiveScreen] = useState<"dashboard" | "work-orders">(
     "dashboard",
   );
@@ -122,9 +124,17 @@ export default function App() {
       );
     }
 
+    if (showSplash) {
+      return <SplashScreen onContinue={() => setShowSplash(false)} />;
+    }
+
     if (!user) {
       return (
-        <LoginScreen authService={authService} onAuthenticated={setUser} />
+        <LoginScreen
+          authService={authService}
+          onAuthenticated={setUser}
+          onBack={() => setShowSplash(true)}
+        />
       );
     }
 
