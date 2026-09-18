@@ -155,6 +155,26 @@ export class AuthService {
     return SecureStore.getItemAsync(ACCESS_TOKEN_KEY);
   }
 
+  async updateOwnProfile(
+    profile: Pick<AuthenticatedUser, "name" | "email" | "contact">,
+  ): Promise<AuthenticatedUser> {
+    const token = await this.getAccessToken();
+    if (!token) throw new Error("Your session has expired. Please log in again.");
+
+    const response = await this.api.patch<AuthenticatedUser>(
+      "/auth/profile",
+      profile,
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+
+    if (!isAuthenticatedUser(response.data)) {
+      throw new Error("The backend returned an invalid profile response");
+    }
+
+    await SecureStore.setItemAsync(USER_KEY, JSON.stringify(response.data));
+    return response.data;
+  }
+
   async getChiefMechanics(): Promise<MobileUserSummary[]> {
     const token = await this.getAccessToken();
     if (!token) return [];

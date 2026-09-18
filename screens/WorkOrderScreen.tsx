@@ -12,6 +12,7 @@ import {
 } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import * as DocumentPicker from "expo-document-picker";
+import Svg, { Circle, Path } from "react-native-svg";
 
 import type {
   AuthenticatedUser,
@@ -2321,7 +2322,10 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
           placeholderTextColor="#94a3b8"
         />
         <TouchableOpacity style={styles.filterButton}>
-          <Text style={styles.filterButtonText}>⊙</Text>
+          <Svg width={18} height={18} viewBox="0 0 24 24" fill="none">
+            <Circle cx="11" cy="11" r="5.5" stroke="#D4A93F" strokeWidth={2} />
+            <Path d="M16 16L21 21" stroke="#D4A93F" strokeWidth={2} strokeLinecap="round" />
+          </Svg>
         </TouchableOpacity>
       </View>
 
