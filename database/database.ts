@@ -94,6 +94,10 @@ export async function createTables(
       await migrateToV4(db);
     }
 
+    if (currentVersion < 5) {
+      await migrateToV5(db);
+    }
+
     if (currentVersion < DATABASE_VERSION) {
       await db.execAsync(`PRAGMA user_version = ${DATABASE_VERSION}`);
     }
@@ -134,6 +138,8 @@ async function hasMissingRequiredColumns(
         "garageId",
         "status",
         "assignedMechanic",
+        "assignedMechanicId",
+        "chiefMechanicId",
         "accountType",
         "checklistTemplateId",
         "odometerReading",
@@ -212,6 +218,56 @@ async function migrateToV4(db: SQLite.SQLiteDatabase): Promise<void> {
   } catch (error) {
     console.error("[SQLite] Schema migration failed", error);
     throw error;
+  }
+}
+
+async function migrateToV5(db: SQLite.SQLiteDatabase): Promise<void> {
+  await db.execAsync("PRAGMA foreign_keys = OFF");
+  try {
+    await db.execAsync(`
+      CREATE TABLE maintenance_schedules_v5 (
+        id TEXT PRIMARY KEY NOT NULL,
+        vehicleId TEXT NOT NULL,
+        title TEXT NOT NULL,
+        garageId TEXT,
+        status TEXT NOT NULL CHECK (status IN ('PENDING', 'DUE', 'IN_PROGRESS', 'DONE', 'COMPLETED', 'OVERDUE', 'CANCELLED')),
+        assignedMechanic TEXT,
+        assignedMechanicId TEXT,
+        chiefMechanicId TEXT,
+        accountType TEXT CHECK (accountType IN ('IN_HOUSE', 'OUTSOURCED', NULL)),
+        checklistTemplateId TEXT,
+        odometerReading INTEGER,
+        triggerType TEXT CHECK (triggerType IN ('MANUAL', 'ODOMETER', 'TIME', NULL)),
+        intervalKm INTEGER,
+        bufferDistanceKm INTEGER,
+        startingReferenceReadingKm INTEGER,
+        intervalType TEXT CHECK (intervalType IN ('DAILY', 'WEEKLY', 'MONTHLY', 'QUARTERLY', 'SEMI_ANNUALLY', 'ANNUALLY', NULL)),
+        startReferenceDate TEXT,
+        previousScheduleId TEXT UNIQUE,
+        workOrderProgress TEXT,
+        deletedAt TEXT,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL,
+        FOREIGN KEY (checklistTemplateId) REFERENCES checklist_templates(id) ON DELETE SET NULL,
+        FOREIGN KEY (previousScheduleId) REFERENCES maintenance_schedules_v5(id) ON DELETE SET NULL
+      );
+      INSERT INTO maintenance_schedules_v5
+        SELECT id, vehicleId, title, garageId, status, assignedMechanic,
+          assignedMechanicId, chiefMechanicId, accountType, checklistTemplateId,
+          odometerReading, triggerType, intervalKm, bufferDistanceKm,
+          startingReferenceReadingKm, intervalType, startReferenceDate,
+          previousScheduleId, workOrderProgress, deletedAt, createdAt, updatedAt
+        FROM maintenance_schedules;
+      DROP TABLE maintenance_schedules;
+      ALTER TABLE maintenance_schedules_v5 RENAME TO maintenance_schedules;
+      CREATE INDEX IF NOT EXISTS idx_maintenance_vehicleId ON maintenance_schedules(vehicleId);
+      CREATE INDEX IF NOT EXISTS idx_maintenance_checklistTemplateId ON maintenance_schedules(checklistTemplateId);
+      CREATE INDEX IF NOT EXISTS idx_maintenance_updatedAt ON maintenance_schedules(updatedAt);
+      CREATE INDEX IF NOT EXISTS idx_maintenance_deletedAt ON maintenance_schedules(deletedAt);
+      CREATE INDEX IF NOT EXISTS idx_maintenance_status ON maintenance_schedules(status);
+    `);
+  } finally {
+    await db.execAsync("PRAGMA foreign_keys = ON");
   }
 }
 
@@ -311,7 +367,7 @@ async function ensureMaintenanceSchedulesSchema(
         vehicleId TEXT NOT NULL,
         title TEXT NOT NULL,
         garageId TEXT,
-        status TEXT NOT NULL CHECK (status IN ('PENDING', 'DUE', 'IN_PROGRESS', 'COMPLETED', 'OVERDUE', 'CANCELLED')),
+        status TEXT NOT NULL CHECK (status IN ('PENDING', 'DUE', 'IN_PROGRESS', 'DONE', 'COMPLETED', 'OVERDUE', 'CANCELLED')),
         assignedMechanic TEXT,
         accountType TEXT CHECK (accountType IN ('IN_HOUSE', 'OUTSOURCED', NULL)),
         checklistTemplateId TEXT,
@@ -365,6 +421,8 @@ async function ensureMaintenanceSchedulesSchema(
     "assignedMechanic",
     "TEXT",
   );
+  await addColumnIfMissing(db, "maintenance_schedules", "assignedMechanicId", "TEXT");
+  await addColumnIfMissing(db, "maintenance_schedules", "chiefMechanicId", "TEXT");
   await addColumnIfMissing(db, "maintenance_schedules", "accountType", "TEXT");
   await addColumnIfMissing(
     db,

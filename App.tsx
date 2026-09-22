@@ -21,6 +21,9 @@ import { DATABASE_NAME } from "./database/tables";
 import { DashboardScreen } from "./screens/DashboardScreen";
 import { LoginScreen } from "./screens/LoginScreen";
 import { SplashScreen } from "./screens/SplashScreen";
+import { PhoneNumberField } from "./screens/PhoneNumberField";
+import { NotificationsScreen } from "./screens/NotificationsScreen";
+import { useNotifications } from "./services/useNotifications";
 import { WorkOrderScreen } from "./screens/WorkOrderScreen";
 import {
   API_BASE_URL,
@@ -28,6 +31,7 @@ import {
   getMobileAccessRole,
   type AuthenticatedUser,
 } from "./services/AuthService";
+import { isValidPhoneNumber, normalizePhoneNumber } from "./services/phoneNumber";
 import { SyncService } from "./services/SyncService";
 
 const authService = new AuthService(API_BASE_URL);
@@ -72,8 +76,9 @@ function WorkOrderTabIcon({ active }: { active: boolean }) {
   );
 }
 
-function NotificationTabIcon({ active }: { active: boolean }) {
+function NotificationTabIcon({ active, count = 0 }: { active: boolean; count?: number }) {
   return (
+    <View>
     <Svg width={26} height={26} viewBox="0 0 24 24" fill="none">
       <Path
         d="M12 4.5a4.5 4.5 0 0 1 4.5 4.5v2.1c0 .8.3 1.5.8 2.2l1.2 1.5c.6.7.1 1.7-.8 1.7H6.3c-.9 0-1.4-1-.8-1.7l1.2-1.5c.5-.7.8-1.4.8-2.2V9A4.5 4.5 0 0 1 12 4.5Z"
@@ -88,6 +93,8 @@ function NotificationTabIcon({ active }: { active: boolean }) {
         strokeLinecap="round"
       />
     </Svg>
+    {count > 0 ? <Text accessibilityLabel={`${count} unread notifications`} style={{ position: "absolute", top: -9, right: -15, backgroundColor: "#a32121", color: "white", borderRadius: 10, paddingHorizontal: 5, fontSize: 11 }}>{count > 99 ? "99+" : count}</Text> : null}
+    </View>
   );
 }
 
@@ -196,6 +203,8 @@ export default function App() {
   >("loading");
   const [startupError, setStartupError] = useState<string | null>(null);
   const [user, setUser] = useState<AuthenticatedUser | null>(null);
+  const inbox = useNotifications(user?.id);
+  const [notificationOrderId, setNotificationOrderId] = useState<string | null>(null);
   const [profileForm, setProfileForm] = useState({
     firstName: "",
     lastName: "",
@@ -307,13 +316,18 @@ export default function App() {
       return;
     }
 
+    if (profileForm.contact.trim() && !isValidPhoneNumber(profileForm.contact)) {
+      setProfileMessage("Enter a Philippine mobile number: +639171234567 or 09171234567.");
+      return;
+    }
+
     setProfileSaving(true);
     setProfileMessage(null);
     try {
       const updatedUser = await authService.updateOwnProfile({
         name,
         email: profileForm.email.trim(),
-        contact: profileForm.contact.trim() || null,
+        contact: normalizePhoneNumber(profileForm.contact) || null,
       });
       setUser(updatedUser);
       setProfileForm({
@@ -361,6 +375,7 @@ export default function App() {
   const navigateTo = (
     screen: "dashboard" | "work-orders" | "notifications" | "profile",
   ) => {
+    setNotificationOrderId(null);
     setActiveScreen(screen);
   };
 
@@ -442,7 +457,7 @@ export default function App() {
     }> = [
       { key: "dashboard", Icon: DashboardTabIcon },
       { key: "work-orders", Icon: WorkOrderTabIcon },
-      { key: "notifications", Icon: NotificationTabIcon },
+      { key: "notifications", Icon: ({ active }: { active: boolean }) => <NotificationTabIcon active={active} count={inbox.unreadCount} /> },
       { key: "profile", Icon: ProfileTabIcon },
     ];
 
@@ -567,14 +582,13 @@ export default function App() {
             onLogout={logout}
           />
         ) : activeScreen === "work-orders" ? (
-          <WorkOrderScreen accessRole={accessRole} user={user} />
+          <WorkOrderScreen accessRole={accessRole} user={user} initialOrderId={notificationOrderId} syncService={syncService} />
         ) : activeScreen === "notifications" ? (
-          <View style={styles.notificationScreen}>
-            <Text style={styles.notificationTitle}>Notifications</Text>
-            <Text style={styles.notificationText}>
-              You have no new notifications yet.
-            </Text>
-          </View>
+          <NotificationsScreen notifications={inbox.notifications} loading={inbox.loading} error={inbox.error} onRefresh={() => void inbox.refresh()} onOpen={(notification) => {
+            void inbox.markRead(notification.id);
+            setNotificationOrderId(notification.scheduleId);
+            setActiveScreen("work-orders");
+          }} />
         ) : (
           <ScrollView style={styles.profileScroll} contentContainerStyle={styles.profileContent}>
             <View style={styles.profileTopCard}>
@@ -659,18 +673,11 @@ export default function App() {
                 </View>
 
                 <View style={styles.formFieldHalf}>
-                  <FieldLabel>Phone</FieldLabel>
-                  <TextInput
-                    style={styles.textInput}
-                    value={profileForm.contact}
-                    onChangeText={(contact) => {
-                      setProfileForm((current) => ({ ...current, contact }));
-                      setProfileMessage(null);
-                    }}
-                    placeholder="Phone number"
-                    placeholderTextColor="#94a3b8"
-                    keyboardType="phone-pad"
-                  />
+                  <FieldLabel>Mobile number</FieldLabel>
+                  <PhoneNumberField value={profileForm.contact} onChange={(contact) => {
+                    setProfileForm((current) => ({ ...current, contact }));
+                    setProfileMessage(null);
+                  }} />
                 </View>
               </View>
 

@@ -11,7 +11,7 @@ import {
 
 import { getMaintenanceSchedules, getVehicles } from "../database/database";
 import type { MaintenanceSchedule, Vehicle } from "../database/tables";
-import type { AuthenticatedUser } from "../services/AuthService";
+import { getMobileAccessRole, type AuthenticatedUser } from "../services/AuthService";
 import { SyncService, type SyncResult } from "../services/SyncService";
 
 interface DashboardScreenProps {
@@ -40,8 +40,8 @@ export function DashboardScreen({
       getMaintenanceSchedules(),
     ]);
     setVehicles(cachedVehicles);
-    setSchedules(cachedSchedules);
-  }, []);
+    setSchedules(cachedSchedules.filter((schedule) => getMobileAccessRole(user.roles) === "chiefMechanic" ? schedule.chiefMechanicId === user.id : schedule.assignedMechanicId === user.id));
+  }, [user.id, user.roles]);
 
   const applySyncResult = useCallback(
     async (result: SyncResult) => {

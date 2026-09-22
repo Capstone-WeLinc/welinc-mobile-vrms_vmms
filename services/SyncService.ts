@@ -392,6 +392,8 @@ function mapMaintenanceSchedule(
       ]),
       "maintenanceSchedule.status",
     ) as any,
+    assignedMechanicId: extractStringValue(scheduleRecord, ["assignedMechanicId"]),
+    chiefMechanicId: extractStringValue(scheduleRecord, ["chiefMechanicId"]),
     assignedMechanic: extractStringValue(scheduleRecord, [
       "assignedMechanic",
       "assignedMechanicName",

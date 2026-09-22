@@ -212,24 +212,14 @@ export class AuthService {
   async updateMaintenanceProgress(
     scheduleId: string,
     progress: Record<string, unknown>,
-  ): Promise<void> {
+  ): Promise<{ status: string; workOrderProgress: Record<string, unknown> }> {
     const token = await this.getAccessToken();
-    if (!token) return;
-
-    try {
-      await this.api.patch(
-        `/maintenance-schedules/${scheduleId}/progress`,
-        progress,
-        {
-          headers: { Authorization: `Bearer ${token}` },
-        },
-      );
-    } catch (error) {
-      if (axios.isAxiosError(error) && error.response?.status === 401) {
-        return;
-      }
-      throw error;
-    }
+    if (!token) throw new Error("Please log in again.");
+    const response = await this.api.patch(
+      `/maintenance-schedules/${scheduleId}/progress`, progress,
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+    return response.data;
   }
 
   async clearSession(): Promise<void> {

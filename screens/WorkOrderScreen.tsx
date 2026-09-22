@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
+import { workOrderStatusColors, workOrderStatusTextColor } from "./workOrderStatusColors";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -14,6 +15,7 @@ import * as ImagePicker from "expo-image-picker";
 import * as DocumentPicker from "expo-document-picker";
 import Svg, { Circle, Path } from "react-native-svg";
 
+import type { SyncService } from "../services/SyncService";
 import type {
   AuthenticatedUser,
   MobileAccessRole,
@@ -88,6 +90,8 @@ type WorkOrder = {
   plate: string;
   maintenanceType: string;
   mechanic: string;
+  assignedMechanicId: string | null;
+  chiefMechanicId: string | null;
   dateCreated: string;
   status: WorkOrderStatus;
   summary: string;
@@ -410,54 +414,33 @@ const parseAiExecutionSections = (text: string) => {
 interface WorkOrderScreenProps {
   accessRole: MobileAccessRole;
   user: AuthenticatedUser;
+  initialOrderId?: string | null;
+  syncService?: SyncService;
 }
 
-export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
-  const fallbackChiefMechanicOptions = [
-    "Ariel Santos",
-    "Ramon Cruz",
-    "Lorenzo Reyes",
-  ];
+export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService }: WorkOrderScreenProps) {
+  const saveQueue = useRef<Promise<unknown>>(Promise.resolve());
+  const actionInFlight = useRef(false);
+  const [savingAction, setSavingAction] = useState(false);
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [activeStep, setActiveStep] = useState<StepKey>("details");
-  const [showChiefMechanicOptions, setShowChiefMechanicOptions] =
-    useState(false);
-  const [chiefMechanicOptions, setChiefMechanicOptions] = useState<string[]>(
-    [],
-  );
-
   const [aiAdvisoryLoading, setAiAdvisoryLoading] = useState(false);
   const [aiRecommendations, setAiRecommendations] =
     useState<WorkOrderRecommendationsResponse | null>(null);
 
   useEffect(() => {
     let mounted = true;
-    void new AuthService(API_BASE_URL)
-      .getChiefMechanics()
-      .then((chiefMechanics) => {
-        if (mounted) {
-          setChiefMechanicOptions(
-            chiefMechanics.length > 0
-              ? chiefMechanics
-                  .map((chiefMechanic) => chiefMechanic.name.trim())
-                  .filter(Boolean)
-              : fallbackChiefMechanicOptions,
-          );
-        }
-      });
-    return () => {
-      mounted = false;
-    };
-  }, []);
-
-  useEffect(() => {
-    let mounted = true;
 
     async function loadWorkOrders(): Promise<void> {
+      setIsLoading(true);
       try {
+        if (initialOrderId && syncService) {
+          await syncService.sync();
+        }
+        if (!mounted) return;
         const db = await getDatabase();
         const maintenanceRepo = new MaintenanceRepository(db);
         const checklistRepo = new ChecklistRepository(db);
@@ -502,6 +485,8 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
               plate: "", // Would need vehicle lookup to populate
               maintenanceType: schedule.title,
               mechanic: schedule.assignedMechanic || "Unassigned",
+              assignedMechanicId: schedule.assignedMechanicId,
+              chiefMechanicId: schedule.chiefMechanicId,
               dateCreated: formatReadableDate(schedule.createdAt),
               status:
                 savedProgress.status ??
@@ -512,7 +497,7 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
                     : schedule.status === "IN_PROGRESS"
                       ? "In Progress"
                       : schedule.status === "COMPLETED"
-                        ? "Done"
+                        ? "Completed"
                         : "Overdue"),
               summary: `${schedule.title} - ${schedule.intervalType || "As needed"}`,
               details: [],
@@ -610,11 +595,24 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
           }),
         );
 
+        if (!mounted) return;
         setWorkOrders(converted);
+        if (initialOrderId) {
+          const target = converted.find((order) => order.id === initialOrderId &&
+            (accessRole === "mechanic" ? order.assignedMechanicId === user.id :
+              accessRole === "chiefMechanic" && order.chiefMechanicId === user.id));
+          if (target) {
+            setSelectedOrderId(target.id);
+            setActiveStep("details");
+          } else {
+            Alert.alert("Work order unavailable", "This work order may have been removed or reassigned. Refresh your work orders and try again.");
+          }
+        }
       } catch (error) {
         console.error("[WorkOrderScreen] Failed to load work orders", error);
+        if (mounted && initialOrderId) Alert.alert("Unable to open work order", "Check your connection and tap the notification again.");
       } finally {
-        setIsLoading(false);
+        if (mounted) setIsLoading(false);
       }
     }
 
@@ -622,7 +620,7 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [initialOrderId, syncService, accessRole, user.id]);
 
   useEffect(() => {
     if (!selectedOrderId) {
@@ -732,43 +730,52 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
     setAiAdvisoryLoading(false);
   }, [selectedOrderId]);
 
-  const knownChiefMechanics = workOrders
-    .map((order) => order.chiefMechanic.trim())
-    .filter(Boolean);
-  const availableChiefMechanics = Array.from(
-    new Set([...chiefMechanicOptions, ...knownChiefMechanics]),
-  );
   const currentUserName = user.name.trim().toLowerCase();
   const currentUserDisplayName = user.name.trim();
 
-  const persistWorkOrder = (order: WorkOrder, status?: string) => {
+  const persistWorkOrder = (order: WorkOrder, _status?: string, action = "SAVE") => {
     const progress = {
-      executionItems: order.executionItems,
-      partDetails: order.partDetails,
-      inspectionItems: order.inspectionItems,
-      chiefMechanic: order.chiefMechanic,
-      inspectorRemarks: order.inspectorRemarks,
-      approvalStatus: order.approvalStatus,
-      mechanicSubmitted: order.mechanicSubmitted,
-      workflowStatus: order.status,
+      executionItems: order.executionItems, partDetails: order.partDetails,
+      inspectionItems: order.inspectionItems, chiefMechanic: order.chiefMechanic,
+      inspectorRemarks: order.inspectorRemarks, approvalStatus: order.approvalStatus,
+      mechanicSubmitted: order.mechanicSubmitted, workflowStatus: order.status, action,
     };
-    const authService = new AuthService(API_BASE_URL);
+    const pending = saveQueue.current.catch(() => undefined).then(async () => {
+      const result = await new AuthService(API_BASE_URL).updateMaintenanceProgress(order.id, progress);
+      const db = await getDatabase();
+      await new MaintenanceRepository(db).updateWorkOrderProgress(order.id, JSON.stringify(result.workOrderProgress), result.status);
+      return result;
+    });
+    saveQueue.current = pending;
+    if (action === "SAVE") void pending.catch(() => Alert.alert("Changes not saved", "Check your connection and retry your changes before leaving this work order."));
+    return pending;
+  };
 
-    void Promise.all([
-      getDatabase().then((db) =>
-        new MaintenanceRepository(db).updateWorkOrderProgress(
-          order.id,
-          JSON.stringify(progress),
-          status,
-        ),
-      ),
-      authService.updateMaintenanceProgress(order.id, progress),
-    ]).catch((error) =>
-      console.error(
-        "[WorkOrderScreen] Failed to save work order progress",
-        error,
-      ),
-    );
+  const performWorkflowAction = async (action: string) => {
+    if (!selectedOrder || actionInFlight.current) return;
+    actionInFlight.current = true;
+    setSavingAction(true);
+    try {
+      const result = await persistWorkOrder(selectedOrder, undefined, action);
+      const saved = parseWorkOrderProgress(JSON.stringify(result.workOrderProgress));
+      setWorkOrders((orders) => orders.map((order) => order.id === selectedOrder.id ? {
+        ...order, ...saved, status: saved.status ?? order.status,
+        mechanicSubmitted: saved.mechanicSubmitted ?? order.mechanicSubmitted,
+        approvalStatus: saved.approvalStatus ?? order.approvalStatus,
+      } : order));
+      if (action !== "START") {
+        Alert.alert(action === "SUBMIT" ? "Sent for Chief Mechanic Review" : "Review saved",
+          action === "SUBMIT" ? "Your work is Done and awaiting chief mechanic approval." : action === "APPROVE" ? "Work order Completed." : "Work order returned for follow-up.");
+        setSelectedOrderId(null);
+      }
+    } catch (error) {
+      const response = (error as { response?: { data?: { message?: string | string[] } } }).response;
+      const message = response?.data?.message;
+      Alert.alert("Status not updated", Array.isArray(message) ? message.join("\n") : message || "Check your connection, refresh the work order, and try again.");
+    } finally {
+      actionInFlight.current = false;
+      setSavingAction(false);
+    }
   };
 
   const updateWorkOrder = (
@@ -781,11 +788,12 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
       accessRole === "mechanic" &&
       (order.mechanicSubmitted ||
         order.approvalStatus === "Verified" ||
-        order.status === "Done") &&
+        order.status === "Done" || order.status === "Completed") &&
       order.approvalStatus !== "Rejected"
     ) {
       return;
     }
+    if (savingAction || (isMechanicRole && order.status !== "In Progress")) return;
     const updatedOrder = update(order);
     setWorkOrders((current) =>
       current.map((item) => (item.id === orderId ? updatedOrder : item)),
@@ -810,7 +818,7 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
       order.chiefMechanic.toLowerCase().includes(query);
 
     if (accessRole === "mechanic") {
-      return matchesQuery && order.mechanic.toLowerCase() === currentUserName;
+      return matchesQuery && order.assignedMechanicId === user.id;
     }
 
     if (accessRole === "chiefMechanic") {
@@ -822,7 +830,7 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
           order.status === "Done" ||
           order.status === "Rejected" ||
           order.status === "For Repair") &&
-        order.chiefMechanic.trim().toLowerCase() === currentUserName
+        order.chiefMechanicId === user.id
       );
     }
 
@@ -871,10 +879,6 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
     }));
   };
 
-  const updateChiefMechanic = (orderId: string, name: string) => {
-    updateWorkOrder(orderId, (order) => ({ ...order, chiefMechanic: name }));
-  };
-
   const updateInspectionStatus = (
     orderId: string,
     itemId: string,
@@ -888,12 +892,6 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
         ...order,
         inspectionItems,
         approvalStatus: getAutomaticInspectionRemark(inspectionItems),
-        mechanicSubmitted:
-          getAutomaticInspectionRemark(inspectionItems) !== "Rejected",
-        status:
-          getAutomaticInspectionRemark(inspectionItems) === "Verified"
-            ? "Done"
-            : "For Verification",
       };
     });
   };
@@ -1177,7 +1175,6 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
   const openOrder = (orderId: string) => {
     setSelectedOrderId(orderId);
     setActiveStep("details");
-    setShowChiefMechanicOptions(false);
   };
 
   const isMechanicRole = accessRole === "mechanic";
@@ -1199,137 +1196,7 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
   };
 
   const handleCompleteOrder = () => {
-    if (!selectedOrder) return;
-
-    if (isChiefMechanicRole) {
-      const hasInspectionResults =
-        selectedOrder.inspectionItems.length > 0 &&
-        selectedOrder.inspectionItems.every(
-          (item) => item.status !== "pending",
-        );
-
-      if (!hasInspectionResults) {
-        Alert.alert(
-          "Inspection Incomplete",
-          "Mark every inspection item as Pass or Fail before approving this work order.",
-        );
-        return;
-      }
-
-      if (
-        selectedOrder.approvalStatus === "Verified" &&
-        selectedOrder.inspectionItems.some((item) => item.status === "fail")
-      ) {
-        Alert.alert(
-          "Inspection Cannot Be Verified",
-          "A work order with failed inspection items is automatically Rejected.",
-        );
-        return;
-      }
-
-      const approved = selectedOrder.approvalStatus === "Verified";
-      const updatedOrder = {
-        ...selectedOrder,
-        approvalStatus: approved
-          ? ("Verified" as const)
-          : selectedOrder.approvalStatus,
-        mechanicSubmitted: selectedOrder.approvalStatus === "Rejected",
-        status: approved ? ("Done" as const) : ("For Verification" as const),
-      };
-      setWorkOrders((current) =>
-        current.map((order) =>
-          order.id === updatedOrder.id ? updatedOrder : order,
-        ),
-      );
-      persistWorkOrder(updatedOrder, approved ? "COMPLETED" : "IN_PROGRESS");
-      Alert.alert(
-        approved ? "Inspection Verified" : "Inspection Submitted",
-        `${selectedOrder.number} ${approved ? "verified" : "returned to the mechanic"}.`,
-      );
-      setSelectedOrderId(null);
-      return;
-    }
-
-    const hasExecutionStatuses =
-      selectedOrder.executionItems.length > 0 &&
-      selectedOrder.executionItems.every((item) => item.status !== "pending");
-
-    const changedExecutionItems = selectedOrder.executionItems.filter(
-      (item) => item.status === "changed",
-    );
-
-    const hasRequiredPartsDetails = changedExecutionItems.every((item) => {
-      const partEntry = selectedOrder.partDetails[item.id] ?? {
-        partsUsed: "",
-        quantity: "",
-        materialCost: "",
-        attachments: [],
-        attachmentName: "",
-        attachmentSizeMb: "",
-      };
-
-      return (
-        partEntry.partsUsed.trim().length > 0 &&
-        partEntry.quantity.trim().length > 0 &&
-        partEntry.materialCost.trim().length > 0 &&
-        partEntry.attachments.length > 0
-      );
-    });
-
-    const hasChiefMechanic = selectedOrder.chiefMechanic.trim().length > 0;
-
-    if (
-      selectedOrder.mechanicSubmitted &&
-      selectedOrder.approvalStatus !== "Rejected"
-    ) {
-      Alert.alert(
-        "Already Sent for Verification",
-        "This work order is locked until the chief mechanic returns it as Rejected.",
-      );
-      return;
-    }
-
-    if (!hasExecutionStatuses) {
-      Alert.alert(
-        "Execution Incomplete",
-        "Mark every checklist item as Checked, Changed, or Not Checked before completing the order.",
-      );
-      return;
-    }
-
-    if (changedExecutionItems.length > 0 && !hasRequiredPartsDetails) {
-      Alert.alert(
-        "Parts, Cost & Photo Details Required",
-        "Fill in the required Parts, Cost, and Photo details for every Changed item before completing the order.",
-      );
-      return;
-    }
-
-    if (!hasChiefMechanic) {
-      Alert.alert(
-        "Chief Mechanic Required",
-        "Select a chief mechanic before completing the order.",
-      );
-      return;
-    }
-
-    const submittedOrder = {
-      ...selectedOrder,
-      mechanicSubmitted: true,
-      approvalStatus: "Unverified" as const,
-      status: "Pending" as const,
-    };
-    setWorkOrders((current) =>
-      current.map((order) =>
-        order.id === submittedOrder.id ? submittedOrder : order,
-      ),
-    );
-    persistWorkOrder(submittedOrder, "IN_PROGRESS");
-    Alert.alert(
-      "Sent for Inspection",
-      `${selectedOrder.number} was sent to ${selectedOrder.chiefMechanic} for inspection.`,
-    );
-    setSelectedOrderId(null);
+    if (isMechanicRole) void performWorkflowAction("SUBMIT");
   };
 
   const getInspectionActionLabel = (remark: InspectionRemark): string => {
@@ -1346,75 +1213,10 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
   };
 
   const handleInspectionAction = () => {
-    if (!selectedOrder) return;
-
+    if (!selectedOrder || !isChiefMechanicRole) return;
     const remark = getAutomaticInspectionRemark(selectedOrder.inspectionItems);
-    if (remark === "Unverified") {
-      if (isMechanicRole && !selectedOrder.mechanicSubmitted) {
-        handleCompleteOrder();
-      }
-      return;
-    }
-
-    if (remark === "Verified") {
-      const completedOrder = {
-        ...selectedOrder,
-        approvalStatus: "Verified" as const,
-        mechanicSubmitted: true,
-        status: "Done" as const,
-      };
-      setWorkOrders((current) =>
-        current.map((order) =>
-          order.id === completedOrder.id ? completedOrder : order,
-        ),
-      );
-      persistWorkOrder(completedOrder, "COMPLETED");
-      Alert.alert(
-        "Inspection Completed",
-        `${selectedOrder.number} is now Done.`,
-      );
-      setSelectedOrderId(null);
-      return;
-    }
-
-    if (remark === "Rejected") {
-      const rejectedOrder = {
-        ...selectedOrder,
-        approvalStatus: "Rejected" as const,
-        mechanicSubmitted: false,
-        status: "Rejected" as const,
-      };
-      setWorkOrders((current) =>
-        current.map((order) =>
-          order.id === rejectedOrder.id ? rejectedOrder : order,
-        ),
-      );
-      persistWorkOrder(rejectedOrder, "IN_PROGRESS");
-      Alert.alert(
-        "Inspection Rejected",
-        `${selectedOrder.number} was returned for correction.`,
-      );
-      setSelectedOrderId(null);
-      return;
-    }
-
-    const repairOrder = {
-      ...selectedOrder,
-      approvalStatus: "For Repair" as const,
-      mechanicSubmitted: true,
-      status: "For Repair" as const,
-    };
-    setWorkOrders((current) =>
-      current.map((order) =>
-        order.id === repairOrder.id ? repairOrder : order,
-      ),
-    );
-    persistWorkOrder(repairOrder, "IN_PROGRESS");
-    Alert.alert(
-      "Transferred to Repair",
-      `${selectedOrder.number} was transferred to the repair system.`,
-    );
-    setSelectedOrderId(null);
+    if (remark === "Unverified") return;
+    void performWorkflowAction(remark === "Verified" ? "APPROVE" : remark === "Rejected" ? "REJECT" : "REPAIR");
   };
 
   const statusStyle = (status: WorkOrderStatus) => {
@@ -1716,7 +1518,7 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
       isMechanicRole &&
       (selectedOrder.mechanicSubmitted ||
         selectedOrder.approvalStatus === "Verified" ||
-        selectedOrder.status === "Done") &&
+        selectedOrder.status !== "In Progress") &&
       selectedOrder.approvalStatus !== "Rejected";
     const changedExecutionItems = selectedOrder.executionItems.filter(
       (item) => item.status === "changed",
@@ -1908,46 +1710,6 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
                 })
               )}
 
-              <View style={styles.chiefMechanicSection}>
-                <Text style={styles.sectionTitle}>Chief Mechanic</Text>
-                <Text style={styles.sectionText}>
-                  Assign a chief mechanic before completing execution.
-                </Text>
-                <View style={styles.dropdownSection}>
-                  <Text style={styles.dropdownLabel}>
-                    Select Chief Mechanic
-                  </Text>
-                  <TouchableOpacity
-                    style={styles.dropdownButton}
-                    disabled={mechanicOrderLocked}
-                    onPress={() =>
-                      setShowChiefMechanicOptions((value) => !value)
-                    }
-                  >
-                    <Text style={styles.dropdownButtonText}>
-                      {selectedOrder.chiefMechanic || "Choose a chief mechanic"}
-                    </Text>
-                  </TouchableOpacity>
-                  {showChiefMechanicOptions && (
-                    <View style={styles.dropdownMenu}>
-                      {availableChiefMechanics.map((option) => (
-                        <TouchableOpacity
-                          key={option}
-                          style={styles.dropdownOption}
-                          onPress={() => {
-                            updateChiefMechanic(selectedOrder.id, option);
-                            setShowChiefMechanicOptions(false);
-                          }}
-                        >
-                          <Text style={styles.dropdownOptionText}>
-                            {option}
-                          </Text>
-                        </TouchableOpacity>
-                      ))}
-                    </View>
-                  )}
-                </View>
-              </View>
             </View>
           )}
 
@@ -2112,46 +1874,6 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
                 </View>
               </View>
 
-              <View style={styles.chiefMechanicSection}>
-                <Text style={styles.sectionTitle}>Chief Mechanic Sign-off</Text>
-                <Text style={styles.sectionText}>
-                  Select the chief mechanic for final inspection.
-                </Text>
-                <View style={styles.dropdownSection}>
-                  <Text style={styles.dropdownLabel}>
-                    Select Chief Mechanic
-                  </Text>
-                  <TouchableOpacity
-                    style={styles.dropdownButton}
-                    disabled={mechanicOrderLocked}
-                    onPress={() =>
-                      setShowChiefMechanicOptions((value) => !value)
-                    }
-                  >
-                    <Text style={styles.dropdownButtonText}>
-                      {selectedOrder.chiefMechanic || "Choose a chief mechanic"}
-                    </Text>
-                  </TouchableOpacity>
-                  {showChiefMechanicOptions && (
-                    <View style={styles.dropdownMenu}>
-                      {availableChiefMechanics.map((option) => (
-                        <TouchableOpacity
-                          key={option}
-                          style={styles.dropdownOption}
-                          onPress={() => {
-                            updateChiefMechanic(selectedOrder.id, option);
-                            setShowChiefMechanicOptions(false);
-                          }}
-                        >
-                          <Text style={styles.dropdownOptionText}>
-                            {option}
-                          </Text>
-                        </TouchableOpacity>
-                      ))}
-                    </View>
-                  )}
-                </View>
-              </View>
             </View>
           )}
 
@@ -2275,24 +1997,39 @@ export function WorkOrderScreen({ accessRole, user }: WorkOrderScreenProps) {
             style={[
               styles.bottomButtonPrimary,
               styles.inspectionActionButton,
-              getAutomaticInspectionRemark(selectedOrder.inspectionItems) ===
+              (selectedOrder.status === "Completed" ||
+                selectedOrder.approvalStatus === "Verified") &&
+                styles.completedActionButton,
+              isChiefMechanicRole && getAutomaticInspectionRemark(selectedOrder.inspectionItems) ===
                 "Unverified" && styles.inspectionActionDisabled,
             ]}
-            onPress={handleInspectionAction}
-            disabled={
-              (isChiefMechanicRole &&
-                getAutomaticInspectionRemark(selectedOrder.inspectionItems) ===
-                  "Unverified") ||
-              (isMechanicRole &&
-                (mechanicOrderLocked ||
-                  (selectedOrder.mechanicSubmitted &&
-                    selectedOrder.approvalStatus !== "Rejected")))
-            }
+            onPress={() => {
+              if (isMechanicRole) {
+                if (["Pending", "Overdue", "Rejected"].includes(selectedOrder.status) && !selectedOrder.mechanicSubmitted) void performWorkflowAction("START");
+                else handleCompleteOrder();
+              } else handleInspectionAction();
+            }}
+            disabled={savingAction || selectedOrder.status === "Completed" ||
+              (isChiefMechanicRole && (!selectedOrder.mechanicSubmitted || getAutomaticInspectionRemark(selectedOrder.inspectionItems) === "Unverified")) ||
+              (isMechanicRole && selectedOrder.mechanicSubmitted)}
           >
-            <Text style={styles.bottomButtonPrimaryText}>
-              {getInspectionActionLabel(
-                getAutomaticInspectionRemark(selectedOrder.inspectionItems),
-              )}
+            <Text
+              style={[
+                styles.bottomButtonPrimaryText,
+                (selectedOrder.status === "Completed" ||
+                  selectedOrder.approvalStatus === "Verified") &&
+                  styles.completedActionButtonText,
+              ]}
+            >
+              {savingAction ? "Saving?" : isMechanicRole
+                ? selectedOrder.status === "Completed" || selectedOrder.approvalStatus === "Verified"
+                  ? "Completed"
+                  : selectedOrder.mechanicSubmitted
+                    ? "Awaiting Chief Review"
+                    : ["Pending", "Overdue", "Rejected"].includes(selectedOrder.status)
+                      ? "Start Work"
+                      : "Mark Done & Submit"
+                : getInspectionActionLabel(getAutomaticInspectionRemark(selectedOrder.inspectionItems))}
             </Text>
           </TouchableOpacity>
         </View>
@@ -2508,14 +2245,14 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     borderWidth: 1.5,
   },
-  statusPending: { backgroundColor: "#f8f8ff", borderColor: "#d9d6ef" },
-  statusInProgress: { backgroundColor: "#dbeafe", borderColor: "#7dd3fc" },
-  statusVerification: { backgroundColor: "#fef3c7", borderColor: "#f59e0b" },
-  statusRejected: { backgroundColor: "#fee2e2", borderColor: "#fca5a5" },
-  statusRepair: { backgroundColor: "#ffedd5", borderColor: "#fdba74" },
-  statusOverdue: { backgroundColor: "#fef5e7", borderColor: "#fcd34d" },
-  statusCompleted: { backgroundColor: "#dcfce7", borderColor: "#86efac" },
-  statusBadgeText: { fontSize: 11, fontWeight: "700", color: "#1a1f6e" },
+  statusPending: workOrderStatusColors.pending,
+  statusInProgress: workOrderStatusColors.inProgress,
+  statusVerification: workOrderStatusColors.verification,
+  statusRejected: workOrderStatusColors.rejected,
+  statusRepair: workOrderStatusColors.repair,
+  statusOverdue: workOrderStatusColors.overdue,
+  statusCompleted: workOrderStatusColors.completed,
+  statusBadgeText: { fontSize: 11, fontWeight: "700", color: workOrderStatusTextColor },
   cardBody: { gap: 4 },
   cardRow: { marginTop: 8 },
   cardBoldLabel: {
@@ -3062,6 +2799,14 @@ const styles = StyleSheet.create({
   },
   inspectionActionDisabled: {
     backgroundColor: "#94a3b8",
+  },
+  completedActionButton: {
+    backgroundColor: "#e2e8f0",
+    borderWidth: 1,
+    borderColor: "#cbd5e1",
+  },
+  completedActionButtonText: {
+    color: "#475569",
   },
   inspectionDecisionFooter: {
     flex: 1.25,
