@@ -1,4 +1,5 @@
 import { workOrderStatusColors, workOrderStatusTextColor } from "./workOrderStatusColors";
+import { getChecklistSubmissionError } from "./workOrderSubmission";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -753,6 +754,14 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
 
   const performWorkflowAction = async (action: string) => {
     if (!selectedOrder || actionInFlight.current) return;
+    if (action === "SUBMIT") {
+      const error = getChecklistSubmissionError(selectedOrder.executionItems);
+      if (error) {
+        setActiveStep("execution");
+        Alert.alert("Checklist incomplete", error);
+        return;
+      }
+    }
     actionInFlight.current = true;
     setSavingAction(true);
     try {
