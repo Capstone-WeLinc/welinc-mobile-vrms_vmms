@@ -2,6 +2,7 @@ import NetInfo, {
   type NetInfoSubscription,
 } from "@react-native-community/netinfo";
 import axios, { type AxiosInstance, type AxiosRequestHeaders } from "axios";
+import { installMobileAuthRefresh } from "./mobileAuthRefresh";
 
 import { clearDatabase, initializeDatabase } from "../database/database";
 import type {
@@ -113,8 +114,9 @@ export class SyncService {
     this.api = axios.create({
       baseURL: apiBaseUrl,
       timeout: options.requestTimeoutMs ?? 15_000,
-      headers: { Accept: "application/json" },
+      headers: { Accept: "application/json", "X-VMMS-Client": "mobile" },
     });
+    installMobileAuthRefresh(this.api, apiBaseUrl);
     this.getAccessToken = options.getAccessToken;
     this.onUnauthorized = options.onUnauthorized;
 

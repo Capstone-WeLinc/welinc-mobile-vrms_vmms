@@ -1,5 +1,6 @@
 import axios, { type AxiosInstance } from "axios";
 import * as SecureStore from "expo-secure-store";
+import { installMobileAuthRefresh } from "./mobileAuthRefresh";
 import { API_BASE_URL } from "./AuthService";
 
 const ACCESS_TOKEN_KEY = "vmms_access_token";
@@ -67,6 +68,7 @@ export class WorkOrderAnalyticsService {
       headers: {
         Accept: "application/json",
         "Content-Type": "application/json",
+        "X-VMMS-Client": "mobile",
       },
     });
 
@@ -76,8 +78,11 @@ export class WorkOrderAnalyticsService {
       headers: {
         Accept: "application/json",
         "Content-Type": "application/json",
+        "X-VMMS-Client": "mobile",
       },
     });
+    installMobileAuthRefresh(this.api, API_BASE_URL);
+    installMobileAuthRefresh(this.fallbackApi, API_BASE_URL);
   }
 
   private async getAuthHeaders(): Promise<Record<string, string>> {

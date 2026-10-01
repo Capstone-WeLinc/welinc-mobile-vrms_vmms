@@ -1,5 +1,6 @@
 import axios from "axios";
 import { API_BASE_URL, AuthService } from "./AuthService";
+import { installMobileAuthRefresh } from "./mobileAuthRefresh";
 
 export interface MaintenanceNotification {
   id: string;
@@ -10,7 +11,12 @@ export interface MaintenanceNotification {
   readAt: string | null;
 }
 
-const api = axios.create({ baseURL: API_BASE_URL, timeout: 15000 });
+const api = axios.create({
+  baseURL: API_BASE_URL,
+  timeout: 15000,
+  headers: { "X-VMMS-Client": "mobile" },
+});
+installMobileAuthRefresh(api, API_BASE_URL);
 api.interceptors.request.use(async (config) => {
   const token = await new AuthService(API_BASE_URL).getAccessToken();
   if (!token) throw new Error("Please log in again.");

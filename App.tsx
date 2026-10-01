@@ -285,6 +285,7 @@ export default function App() {
   const logout = async () => {
     syncService.stopAutoSync();
     try {
+      await authService.recordLogout();
       await authService.clearSession();
       // Prevent one account from seeing another account's cached data.
       await clearDatabase();

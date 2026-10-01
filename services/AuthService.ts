@@ -1,8 +1,11 @@
 import axios, { type AxiosInstance } from "axios";
 import * as SecureStore from "expo-secure-store";
-
-const ACCESS_TOKEN_KEY = "vmms_access_token";
-const USER_KEY = "vmms_authenticated_user";
+import {
+  ACCESS_TOKEN_KEY,
+  REFRESH_TOKEN_KEY,
+  USER_KEY,
+  installMobileAuthRefresh,
+} from "./mobileAuthRefresh";
 
 const DEFAULT_API_BASE_URL = "http://localhost:3000";
 
@@ -55,6 +58,7 @@ export function getMobileAccessRole(
 
 interface LoginResponse {
   accessToken: string;
+  refreshToken: string;
   user: AuthenticatedUser;
 }
 
@@ -68,8 +72,10 @@ export class AuthService {
       headers: {
         Accept: "application/json",
         "Content-Type": "application/json",
+        "X-VMMS-Client": "mobile",
       },
     });
+    installMobileAuthRefresh(this.api, apiBaseUrl);
   }
 
   async login(email: string, password: string): Promise<AuthenticatedUser> {
@@ -78,8 +84,8 @@ export class AuthService {
         email: email.trim().toLowerCase(),
         password,
       });
-      const { accessToken, user } = response.data;
-      if (!accessToken || !isAuthenticatedUser(user)) {
+      const { accessToken, refreshToken, user } = response.data;
+      if (!accessToken || !refreshToken || !isAuthenticatedUser(user)) {
         throw new Error("The backend returned an invalid login response");
       }
 
@@ -92,6 +98,7 @@ export class AuthService {
 
       await Promise.all([
         SecureStore.setItemAsync(ACCESS_TOKEN_KEY, accessToken),
+        SecureStore.setItemAsync(REFRESH_TOKEN_KEY, refreshToken),
         SecureStore.setItemAsync(USER_KEY, JSON.stringify(user)),
       ]);
       return user;
@@ -153,6 +160,24 @@ export class AuthService {
 
   getAccessToken(): Promise<string | null> {
     return SecureStore.getItemAsync(ACCESS_TOKEN_KEY);
+  }
+
+  async recordLogout(): Promise<void> {
+    const [token, refreshToken, userJson] = await Promise.all([
+      this.getAccessToken(),
+      SecureStore.getItemAsync(REFRESH_TOKEN_KEY),
+      SecureStore.getItemAsync(USER_KEY),
+    ]);
+    if (!token || !userJson) return;
+    try {
+      await this.api.post(
+        "/auth/logout",
+        { refreshToken },
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+    } catch (error) {
+      console.warn("[Auth] Unable to record logout activity", error);
+    }
   }
 
   async updateOwnProfile(
@@ -225,9 +250,11 @@ export class AuthService {
   async clearSession(): Promise<void> {
     await Promise.all([
       SecureStore.deleteItemAsync(ACCESS_TOKEN_KEY),
+      SecureStore.deleteItemAsync(REFRESH_TOKEN_KEY),
       SecureStore.deleteItemAsync(USER_KEY),
     ]);
   }
+
 }
 
 function isAuthenticatedUser(value: unknown): value is AuthenticatedUser {
