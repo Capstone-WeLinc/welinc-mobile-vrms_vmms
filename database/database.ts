@@ -137,6 +137,7 @@ async function hasMissingRequiredColumns(
         "title",
         "garageId",
         "status",
+        "startDate",
         "assignedMechanic",
         "assignedMechanicId",
         "chiefMechanicId",
@@ -231,6 +232,7 @@ async function migrateToV5(db: SQLite.SQLiteDatabase): Promise<void> {
         title TEXT NOT NULL,
         garageId TEXT,
         status TEXT NOT NULL CHECK (status IN ('PENDING', 'DUE', 'IN_PROGRESS', 'DONE', 'COMPLETED', 'OVERDUE', 'CANCELLED')),
+        startDate TEXT,
         assignedMechanic TEXT,
         assignedMechanicId TEXT,
         chiefMechanicId TEXT,
@@ -252,7 +254,7 @@ async function migrateToV5(db: SQLite.SQLiteDatabase): Promise<void> {
         FOREIGN KEY (previousScheduleId) REFERENCES maintenance_schedules_v5(id) ON DELETE SET NULL
       );
       INSERT INTO maintenance_schedules_v5
-        SELECT id, vehicleId, title, garageId, status, assignedMechanic,
+        SELECT id, vehicleId, title, garageId, status, startDate, assignedMechanic,
           assignedMechanicId, chiefMechanicId, accountType, checklistTemplateId,
           odometerReading, triggerType, intervalKm, bufferDistanceKm,
           startingReferenceReadingKm, intervalType, startReferenceDate,
@@ -415,6 +417,7 @@ async function ensureMaintenanceSchedulesSchema(
     "status",
     "TEXT NOT NULL DEFAULT 'PENDING'",
   );
+  await addColumnIfMissing(db, "maintenance_schedules", "startDate", "TEXT");
   await addColumnIfMissing(
     db,
     "maintenance_schedules",

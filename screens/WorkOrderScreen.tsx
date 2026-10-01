@@ -1,5 +1,11 @@
 import { workOrderStatusColors, workOrderStatusTextColor } from "./workOrderStatusColors";
-import { getChecklistSubmissionError } from "./workOrderSubmission";
+import {
+  getChangedPartsSubmissionError,
+  getChecklistSubmissionError,
+  normalizePartDetails,
+} from "./workOrderSubmission";
+import { isWorkOrderStartDateReached } from "./workOrderStartDate";
+import { formatWorkOrderDate as formatReadableDate } from "../services/workOrderDates";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -29,6 +35,7 @@ import {
 import { getDatabase } from "../database/database";
 import { ChecklistRepository } from "../repositories/ChecklistRepository";
 import { MaintenanceRepository } from "../repositories/MaintenanceRepository";
+import { VehicleRepository } from "../repositories/VehicleRepository";
 import type { ChecklistItem, MaintenanceSchedule } from "../database/tables";
 
 type WorkOrderStatus =
@@ -57,13 +64,6 @@ type InspectionItem = {
 };
 
 type InspectionRemark = "Verified" | "Rejected" | "For Repair" | "Unverified";
-
-type PartsUsedItem = {
-  id: string;
-  label: string;
-  partsUsed: string;
-  materialCost: string;
-};
 
 type ScheduleDetail = {
   label: string;
@@ -94,6 +94,7 @@ type WorkOrder = {
   assignedMechanicId: string | null;
   chiefMechanicId: string | null;
   dateCreated: string;
+  startDate: string | null;
   status: WorkOrderStatus;
   summary: string;
   details: string[];
@@ -101,7 +102,6 @@ type WorkOrder = {
   checklistTemplateId: string | null;
   scheduleDetails: ScheduleDetail[];
   executionItems: ExecutionItem[];
-  partsUsedItems: PartsUsedItem[];
   partDetails: Record<string, PartDetailEntry>;
   inspectionItems: InspectionItem[];
   chiefMechanic: string;
@@ -142,7 +142,9 @@ const parseWorkOrderProgress = (
         ? parsed.executionItems
         : executionItems,
       partDetails:
-        parsed.partDetails && typeof parsed.partDetails === "object"
+        parsed.partDetails &&
+        typeof parsed.partDetails === "object" &&
+        !Array.isArray(parsed.partDetails)
           ? parsed.partDetails
           : undefined,
       inspectionItems: Array.isArray(parsed.inspectionItems)
@@ -173,21 +175,6 @@ const parseWorkOrderProgress = (
   } catch {
     return {};
   }
-};
-
-const formatReadableDate = (value: string | null | undefined): string => {
-  if (!value) return "N/A";
-
-  const parsedDate = new Date(value);
-  if (Number.isNaN(parsedDate.getTime())) {
-    return value;
-  }
-
-  return parsedDate.toLocaleDateString("en-US", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
 };
 
 const formatWorkOrderNumber = (value: string | null | undefined): string => {
@@ -225,6 +212,7 @@ const formatScheduleField = (
     | "vehicleId"
     | "title"
     | "createdAt"
+    | "startDate"
     | "accountType"
     | "odometerReading"
     | "triggerType"
@@ -235,7 +223,7 @@ const formatScheduleField = (
   >,
   value: MaintenanceSchedule[keyof MaintenanceSchedule],
 ): string => {
-  if (field === "createdAt" || field === "startReferenceDate") {
+  if (field === "createdAt" || field === "startDate" || field === "startReferenceDate") {
     return formatDisplayValue(value as string | null | undefined, "date");
   }
 
@@ -290,6 +278,27 @@ const buildExecutionItems = (
     }));
 };
 
+const reconcileExecutionItems = (
+  assignedItems: ExecutionItem[],
+  savedItems?: ExecutionItem[],
+): ExecutionItem[] => {
+  if (!savedItems) return assignedItems;
+  const savedById = new Map(savedItems.map((item) => [item.id, item]));
+  return assignedItems.map((item) => {
+    const saved = savedById.get(item.id);
+    if (!saved) return item;
+    return {
+      ...item,
+      status:
+        saved.status === "checked" || saved.status === "changed" ||
+        saved.status === "notChecked" || saved.status === "pending"
+          ? saved.status
+          : "pending",
+      note: typeof saved.note === "string" ? saved.note : "",
+    };
+  });
+};
+
 const buildInspectionItems = (
   executionItems: ExecutionItem[],
 ): InspectionItem[] =>
@@ -299,6 +308,26 @@ const buildInspectionItems = (
     status: "pending",
     note: "",
   }));
+
+const reconcileInspectionItems = (
+  executionItems: ExecutionItem[],
+  savedItems?: InspectionItem[],
+): InspectionItem[] => {
+  if (!savedItems?.length) return buildInspectionItems(executionItems);
+  const savedById = new Map(savedItems.map((item) => [item.id, item]));
+  return executionItems.map((item) => {
+    const saved = savedById.get(item.id);
+    return {
+      id: item.id,
+      label: item.label,
+      status:
+        saved?.status === "pass" || saved?.status === "fail"
+          ? saved.status
+          : "pending",
+      note: typeof saved?.note === "string" ? saved.note : "",
+    };
+  });
+};
 
 const getAutomaticInspectionRemark = (
   inspectionItems: InspectionItem[],
@@ -421,6 +450,9 @@ interface WorkOrderScreenProps {
 
 export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService }: WorkOrderScreenProps) {
   const saveQueue = useRef<Promise<unknown>>(Promise.resolve());
+  const localSaveQueue = useRef<Promise<unknown>>(Promise.resolve());
+  const syncWarningShown = useRef(false);
+  const progressRevision = useRef(new Map<string, number>());
   const actionInFlight = useRef(false);
   const [savingAction, setSavingAction] = useState(false);
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>([]);
@@ -445,7 +477,10 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
         const db = await getDatabase();
         const maintenanceRepo = new MaintenanceRepository(db);
         const checklistRepo = new ChecklistRepository(db);
+        const vehicleRepo = new VehicleRepository(db);
         const schedules = await maintenanceRepo.getMaintenanceSchedules();
+        const vehicles = await vehicleRepo.getVehicles();
+        const vehiclesById = new Map(vehicles.map((vehicle) => [vehicle.id, vehicle]));
 
         if (!mounted) return;
 
@@ -454,8 +489,9 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
             const resolvedTemplate = await resolveChecklistTemplate(
               checklistRepo,
               schedule.checklistTemplateId,
-              schedule.title,
+              schedule.checklistTemplateId ? schedule.title : null,
             );
+            const vehicle = vehiclesById.get(schedule.vehicleId);
 
             const executionItems: ExecutionItem[] = buildExecutionItems(
               resolvedTemplate.templateItems,
@@ -474,21 +510,25 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
               schedule.workOrderProgress,
               executionItems,
             );
-            const savedExecutionItems =
-              savedProgress.executionItems ?? executionItems;
-            const savedInspectionItems = savedProgress.inspectionItems?.length
-              ? savedProgress.inspectionItems
-              : buildInspectionItems(savedExecutionItems);
+            const savedExecutionItems = reconcileExecutionItems(
+              executionItems,
+              savedProgress.executionItems,
+            );
+            const savedInspectionItems = reconcileInspectionItems(
+              savedExecutionItems,
+              savedProgress.inspectionItems,
+            );
 
             return {
               id: schedule.id,
               number: formatWorkOrderNumber(schedule.id),
-              plate: "", // Would need vehicle lookup to populate
+              plate: vehicle?.plateNumber ?? schedule.vehicleId,
               maintenanceType: schedule.title,
               mechanic: schedule.assignedMechanic || "Unassigned",
               assignedMechanicId: schedule.assignedMechanicId,
               chiefMechanicId: schedule.chiefMechanicId,
               dateCreated: formatReadableDate(schedule.createdAt),
+              startDate: schedule.startDate,
               status:
                 savedProgress.status ??
                 (schedule.status === "PENDING"
@@ -511,7 +551,9 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
                 },
                 {
                   label: "Vehicle",
-                  value: formatScheduleField("vehicleId", schedule.vehicleId),
+                  value: vehicle
+                    ? `${vehicle.plateNumber}${vehicle.model ? ` · ${vehicle.model}` : ""} (${schedule.vehicleId})`
+                    : formatScheduleField("vehicleId", schedule.vehicleId),
                 },
                 {
                   label: "Checklist Template",
@@ -520,6 +562,10 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
                 {
                   label: "Date Created",
                   value: formatScheduleField("createdAt", schedule.createdAt),
+                },
+                {
+                  label: "Scheduled Start Date",
+                  value: formatScheduleField("startDate", schedule.startDate),
                 },
                 {
                   label: "Account Type",
@@ -569,14 +615,6 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
                 },
               ],
               executionItems: savedExecutionItems,
-              partsUsedItems: [
-                {
-                  id: "p1",
-                  label: schedule.title,
-                  partsUsed: "Not applicable",
-                  materialCost: "0.00",
-                },
-              ],
               partDetails: savedProgress.partDetails ?? partDetails,
               inspectionItems: savedInspectionItems,
               chiefMechanic: savedProgress.chiefMechanic ?? "",
@@ -645,7 +683,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
         const resolvedTemplate = await resolveChecklistTemplate(
           checklistRepo,
           currentOrder.checklistTemplateId,
-          currentOrder.maintenanceType,
+          currentOrder.checklistTemplateId ? currentOrder.maintenanceType : null,
         );
 
         if (!mounted) {
@@ -679,13 +717,15 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
 
             return {
               ...order,
-              executionItems: savedProgress.executionItems ?? executionItems,
+              executionItems: reconcileExecutionItems(
+                executionItems,
+                savedProgress.executionItems,
+              ),
               partDetails,
-              inspectionItems: savedProgress.inspectionItems?.length
-                ? savedProgress.inspectionItems
-                : buildInspectionItems(
-                    savedProgress.executionItems ?? executionItems,
-                  ),
+              inspectionItems: reconcileInspectionItems(
+                reconcileExecutionItems(executionItems, savedProgress.executionItems),
+                savedProgress.inspectionItems,
+              ),
               workOrderProgress: currentOrder.workOrderProgress,
             };
           }),
@@ -723,8 +763,27 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
     }
   }, []);
 
-  const selectedOrder =
+  const selectedOrderRecord =
     workOrders.find((order) => order.id === selectedOrderId) ?? null;
+  // Older/offline work-order progress may not contain collections added in a
+  // newer app version. Normalize at the selection boundary before rendering.
+  const selectedOrder = selectedOrderRecord
+    ? {
+        ...selectedOrderRecord,
+        executionItems: Array.isArray(selectedOrderRecord.executionItems)
+          ? selectedOrderRecord.executionItems
+          : [],
+        partDetails: normalizePartDetails<PartDetailEntry>(
+          selectedOrderRecord.partDetails,
+        ),
+        inspectionItems: Array.isArray(selectedOrderRecord.inspectionItems)
+          ? selectedOrderRecord.inspectionItems
+          : [],
+        scheduleDetails: Array.isArray(selectedOrderRecord.scheduleDetails)
+          ? selectedOrderRecord.scheduleDetails
+          : [],
+      }
+    : null;
 
   useEffect(() => {
     setAiRecommendations(null);
@@ -735,30 +794,98 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
   const currentUserDisplayName = user.name.trim();
 
   const persistWorkOrder = (order: WorkOrder, _status?: string, action = "SAVE") => {
+    const partDetails = normalizePartDetails<PartDetailEntry>(order.partDetails);
+    const partsCost = Object.values(partDetails).reduce((total, entry) => {
+      if (typeof entry?.partsUsed !== "string" || !entry.partsUsed.trim()) return total;
+      const cost = Number.parseFloat(entry.materialCost);
+      return total + (Number.isFinite(cost) && cost >= 0 ? cost : 0);
+    }, 0);
     const progress = {
-      executionItems: order.executionItems, partDetails: order.partDetails,
-      inspectionItems: order.inspectionItems, chiefMechanic: order.chiefMechanic,
+      executionItems: Array.isArray(order.executionItems) ? order.executionItems : [], partDetails,
+      inspectionItems: Array.isArray(order.inspectionItems) ? order.inspectionItems : [], chiefMechanic: order.chiefMechanic,
       inspectorRemarks: order.inspectorRemarks, approvalStatus: order.approvalStatus,
       mechanicSubmitted: order.mechanicSubmitted, workflowStatus: order.status, action,
+      partsCost,
     };
+    const revision = (progressRevision.current.get(order.id) ?? 0) + 1;
+    progressRevision.current.set(order.id, revision);
+    const pendingProgress = { ...progress, _syncPending: true, _localRevision: revision };
+    const pendingProgressJson = JSON.stringify(pendingProgress);
+    // Keep the in-memory work-order snapshot in step with its local save. The
+    // checklist reload on re-entry reads this field to restore item statuses.
+    setWorkOrders((current) =>
+      current.map((item) =>
+        item.id === order.id
+          ? { ...item, workOrderProgress: pendingProgressJson }
+          : item,
+      ),
+    );
+    const localSave = localSaveQueue.current.catch(() => undefined).then(async () => {
+      const db = await getDatabase();
+      await new MaintenanceRepository(db).updateWorkOrderProgress(
+        order.id,
+        pendingProgressJson,
+      );
+    });
+    localSaveQueue.current = localSave;
     const pending = saveQueue.current.catch(() => undefined).then(async () => {
+      await localSave;
       const result = await new AuthService(API_BASE_URL).updateMaintenanceProgress(order.id, progress);
       const db = await getDatabase();
-      await new MaintenanceRepository(db).updateWorkOrderProgress(order.id, JSON.stringify(result.workOrderProgress), result.status);
+      if (progressRevision.current.get(order.id) === revision) {
+        await new MaintenanceRepository(db).updateWorkOrderProgress(
+          order.id,
+          JSON.stringify({ ...result.workOrderProgress, _syncPending: false }),
+          result.status,
+        );
+      }
+      syncWarningShown.current = false;
       return result;
     });
     saveQueue.current = pending;
-    if (action === "SAVE") void pending.catch(() => Alert.alert("Changes not saved", "Check your connection and retry your changes before leaving this work order."));
+    if (action === "SAVE") void pending.catch(() => {
+      if (syncWarningShown.current) return;
+      syncWarningShown.current = true;
+      Alert.alert("Saved on this device", "Your progress is stored locally and will sync when the connection is available.");
+    });
     return pending;
   };
 
   const performWorkflowAction = async (action: string) => {
     if (!selectedOrder || actionInFlight.current) return;
-    if (action === "SUBMIT") {
-      const error = getChecklistSubmissionError(selectedOrder.executionItems);
+    if (action === "START" && !isWorkOrderStartDateReached(selectedOrder.startDate)) {
+      Alert.alert(
+        "Work order not ready",
+        selectedOrder.startDate
+          ? `This work order can be started on ${formatReadableDate(selectedOrder.startDate)}.`
+          : "This work order has no scheduled start date. Ask Operations to update its schedule.",
+      );
+      return;
+    }
+    if (action === "START" || action === "SUBMIT") {
+      const error =
+        action === "START"
+          ? selectedOrder.executionItems.length === 0
+            ? "No assigned checklist items are available. Refresh the work order or ask Operations to assign a checklist."
+            : null
+          : getChecklistSubmissionError(selectedOrder.executionItems);
       if (error) {
         setActiveStep("execution");
-        Alert.alert("Checklist incomplete", error);
+        Alert.alert(
+          "Assigned checklist required",
+          `${error}\n\nAsk Operations to assign or refresh the checklist before starting maintenance.`,
+        );
+        return;
+      }
+    }
+    if (action === "SUBMIT") {
+      const partsError = getChangedPartsSubmissionError(
+        selectedOrder.executionItems,
+        selectedOrder.partDetails,
+      );
+      if (partsError) {
+        setActiveStep("parts");
+        Alert.alert("Parts details incomplete", partsError);
         return;
       }
     }
@@ -766,7 +893,10 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
     setSavingAction(true);
     try {
       const result = await persistWorkOrder(selectedOrder, undefined, action);
-      const saved = parseWorkOrderProgress(JSON.stringify(result.workOrderProgress));
+      const saved = parseWorkOrderProgress(
+        JSON.stringify(result.workOrderProgress),
+        selectedOrder.executionItems,
+      );
       setWorkOrders((orders) => orders.map((order) => order.id === selectedOrder.id ? {
         ...order, ...saved, status: saved.status ?? order.status,
         mechanicSubmitted: saved.mechanicSubmitted ?? order.mechanicSubmitted,
@@ -803,7 +933,14 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
       return;
     }
     if (savingAction || (isMechanicRole && order.status !== "In Progress")) return;
-    const updatedOrder = update(order);
+    const normalizedOrder = {
+      ...order,
+      executionItems: Array.isArray(order.executionItems) ? order.executionItems : [],
+      partDetails: normalizePartDetails<PartDetailEntry>(order.partDetails),
+      inspectionItems: Array.isArray(order.inspectionItems) ? order.inspectionItems : [],
+      scheduleDetails: Array.isArray(order.scheduleDetails) ? order.scheduleDetails : [],
+    };
+    const updatedOrder = update(normalizedOrder);
     setWorkOrders((current) =>
       current.map((item) => (item.id === orderId ? updatedOrder : item)),
     );
@@ -943,6 +1080,28 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
     }));
   };
 
+  const appendAttachmentToItem = (
+    orderId: string,
+    itemId: string,
+    attachment: PartDetailEntry["attachments"][number],
+  ) => {
+    updateWorkOrder(orderId, (order) => {
+      const existing = order.partDetails[itemId] ?? createDefaultPartDetailEntry();
+      return {
+        ...order,
+        partDetails: {
+          ...order.partDetails,
+          [itemId]: {
+            ...existing,
+            attachments: [...existing.attachments, attachment],
+            attachmentName: "",
+            attachmentSizeMb: "",
+          },
+        },
+      };
+    });
+  };
+
   const addAttachmentToItem = async (orderId: string, itemId: string) => {
     const order = workOrders.find((item) => item.id === orderId);
     if (!order) return;
@@ -1028,39 +1187,11 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
             );
             return;
           }
-          setWorkOrders((current) =>
-            current.map((existingOrder) => {
-              if (
-                existingOrder.id !== orderId ||
-                (isMechanicRole &&
-                  (existingOrder.mechanicSubmitted ||
-                    existingOrder.approvalStatus === "Verified" ||
-                    existingOrder.status === "Done") &&
-                  existingOrder.approvalStatus !== "Rejected")
-              ) {
-                return existingOrder;
-              }
-              return {
-                ...existingOrder,
-                partDetails: {
-                  ...existingOrder.partDetails,
-                  [itemId]: {
-                    ...existingOrder.partDetails[itemId],
-                    attachments: [
-                      ...(existingOrder.partDetails[itemId]?.attachments ?? []),
-                      {
-                        id: `${itemId}-${Date.now()}`,
-                        name: asset.fileName ?? "Gallery attachment",
-                        sizeMb: Number(fileSizeMb.toFixed(2)),
-                      },
-                    ],
-                    attachmentName: "",
-                    attachmentSizeMb: "",
-                  },
-                },
-              };
-            }),
-          );
+          appendAttachmentToItem(orderId, itemId, {
+            id: `${itemId}-${Date.now()}`,
+            name: asset.fileName ?? "Gallery attachment",
+            sizeMb: Number(fileSizeMb.toFixed(2)),
+          });
         },
       },
       {
@@ -1078,39 +1209,11 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
             );
             return;
           }
-          setWorkOrders((current) =>
-            current.map((existingOrder) => {
-              if (
-                existingOrder.id !== orderId ||
-                (isMechanicRole &&
-                  (existingOrder.mechanicSubmitted ||
-                    existingOrder.approvalStatus === "Verified" ||
-                    existingOrder.status === "Done") &&
-                  existingOrder.approvalStatus !== "Rejected")
-              ) {
-                return existingOrder;
-              }
-              return {
-                ...existingOrder,
-                partDetails: {
-                  ...existingOrder.partDetails,
-                  [itemId]: {
-                    ...existingOrder.partDetails[itemId],
-                    attachments: [
-                      ...(existingOrder.partDetails[itemId]?.attachments ?? []),
-                      {
-                        id: `${itemId}-${Date.now()}`,
-                        name: asset.fileName ?? "Camera photo",
-                        sizeMb: Number(fileSizeMb.toFixed(2)),
-                      },
-                    ],
-                    attachmentName: "",
-                    attachmentSizeMb: "",
-                  },
-                },
-              };
-            }),
-          );
+          appendAttachmentToItem(orderId, itemId, {
+            id: `${itemId}-${Date.now()}`,
+            name: asset.fileName ?? "Camera photo",
+            sizeMb: Number(fileSizeMb.toFixed(2)),
+          });
         },
       },
       {
@@ -1126,39 +1229,11 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
             );
             return;
           }
-          setWorkOrders((current) =>
-            current.map((existingOrder) => {
-              if (
-                existingOrder.id !== orderId ||
-                (isMechanicRole &&
-                  (existingOrder.mechanicSubmitted ||
-                    existingOrder.approvalStatus === "Verified" ||
-                    existingOrder.status === "Done") &&
-                  existingOrder.approvalStatus !== "Rejected")
-              ) {
-                return existingOrder;
-              }
-              return {
-                ...existingOrder,
-                partDetails: {
-                  ...existingOrder.partDetails,
-                  [itemId]: {
-                    ...existingOrder.partDetails[itemId],
-                    attachments: [
-                      ...(existingOrder.partDetails[itemId]?.attachments ?? []),
-                      {
-                        id: `${itemId}-${Date.now()}`,
-                        name: result.assets?.[0]?.name ?? "File attachment",
-                        sizeMb: Number(fileSizeMb.toFixed(2)),
-                      },
-                    ],
-                    attachmentName: "",
-                    attachmentSizeMb: "",
-                  },
-                },
-              };
-            }),
-          );
+          appendAttachmentToItem(orderId, itemId, {
+            id: `${itemId}-${Date.now()}`,
+            name: result.assets?.[0]?.name ?? "File attachment",
+            sizeMb: Number(fileSizeMb.toFixed(2)),
+          });
         },
       },
       { text: "Cancel", style: "cancel" },
@@ -1169,12 +1244,9 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
     const order = workOrders.find((o) => o.id === orderId);
     if (!order) return "0.00";
 
-    const total = order.executionItems.reduce((sum, item) => {
-      if (item.status !== "changed") return sum;
-
-      const cost = Number.parseFloat(
-        order.partDetails[item.id]?.materialCost || "0",
-      );
+    const total = Object.values(normalizePartDetails<PartDetailEntry>(order.partDetails)).reduce((sum, entry) => {
+      if (typeof entry?.partsUsed !== "string" || !entry.partsUsed.trim()) return sum;
+      const cost = Number.parseFloat(entry.materialCost || "0");
       return sum + (Number.isNaN(cost) ? 0 : cost);
     }, 0);
 
@@ -1523,15 +1595,21 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
   };
 
   if (selectedOrder) {
+    const canManuallyStart = ["Pending", "Overdue", "Rejected"].includes(selectedOrder.status) &&
+      !selectedOrder.mechanicSubmitted;
+    const startDateReached = isWorkOrderStartDateReached(selectedOrder.startDate);
     const mechanicOrderLocked =
       isMechanicRole &&
       (selectedOrder.mechanicSubmitted ||
         selectedOrder.approvalStatus === "Verified" ||
         selectedOrder.status !== "In Progress") &&
       selectedOrder.approvalStatus !== "Rejected";
-    const changedExecutionItems = selectedOrder.executionItems.filter(
-      (item) => item.status === "changed",
-    );
+    const recordedParts = selectedOrder.executionItems.flatMap((item) => {
+      const entry = selectedOrder.partDetails[item.id];
+      return typeof entry?.partsUsed === "string" && entry.partsUsed.trim()
+        ? [{ item, entry }]
+        : [];
+    });
     return (
       <View style={styles.container}>
         {/* Detail Header */}
@@ -1608,28 +1686,39 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
                     Labor, materials, uploads, and supporting documentation for
                     this work order.
                   </Text>
-                  {selectedOrder.partsUsedItems.length === 0 ? (
+                  {recordedParts.length === 0 ? (
                     <Text style={styles.emptyPartsText}>
                       No parts recorded for this work order.
                     </Text>
                   ) : (
-                    selectedOrder.partsUsedItems.map((item) => (
+                    recordedParts.map(({ item, entry }) => (
                       <View key={item.id} style={styles.partsItemCard}>
                         <Text style={styles.partsItemTitle}>{item.label}</Text>
                         <View style={styles.partsItemRow}>
                           <View style={styles.partsItemColumn}>
                             <Text style={styles.partsLabel}>Parts Used</Text>
                             <Text style={styles.partsValue}>
-                              {item.partsUsed}
+                              {entry.partsUsed}
+                            </Text>
+                          </View>
+                          <View style={styles.partsItemColumn}>
+                            <Text style={styles.partsLabel}>Quantity</Text>
+                            <Text style={styles.partsValue}>
+                              {entry.quantity || "N/A"}
                             </Text>
                           </View>
                           <View style={styles.partsItemColumn}>
                             <Text style={styles.partsLabel}>Material Cost</Text>
                             <Text style={styles.partsValue}>
-                              ₱{parseFloat(item.materialCost).toFixed(2)}
+                              ₱{Number.parseFloat(entry.materialCost || "0").toFixed(2)}
                             </Text>
                           </View>
                         </View>
+                        {Array.isArray(entry.attachments) && entry.attachments.length > 0 ? (
+                          <Text style={styles.partsValue}>
+                            Attachments: {entry.attachments.map((file) => file.name).join(", ")}
+                          </Text>
+                        ) : null}
                       </View>
                     ))
                   )}
@@ -1727,12 +1816,10 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
             <View style={styles.detailCard}>
               <Text style={styles.sectionTitle}>Parts, Cost & Photos</Text>
               <Text style={styles.sectionText}>
-                {changedExecutionItems.length > 0
-                  ? `${changedExecutionItems.length} changed item${changedExecutionItems.length === 1 ? "" : "s"} will appear below.`
-                  : "Each item marked as Changed will generate a parts entry below."}
+                Record any parts or materials used against the relevant checklist item. Parts, quantity, cost, and an attachment are required for items marked Changed.
               </Text>
 
-              {changedExecutionItems.map((item) => {
+              {selectedOrder.executionItems.map((item) => {
                 const partEntry = selectedOrder.partDetails[item.id] ?? {
                   partsUsed: "",
                   quantity: "",
@@ -1867,10 +1954,9 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
                 );
               })}
 
-              {changedExecutionItems.length === 0 && (
+              {selectedOrder.executionItems.length === 0 && (
                 <Text style={styles.emptyPartsText}>
-                  No changed items yet. Mark an execution item as Changed to
-                  populate this tab.
+                  No checklist items are available for recording parts.
                 </Text>
               )}
 
@@ -1973,6 +2059,16 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
           )}
         </ScrollView>
 
+        {isMechanicRole && canManuallyStart && !startDateReached ? (
+          <View style={styles.startDateNotice}>
+            <Text style={styles.startDateNoticeText}>
+              Available to start {selectedOrder.startDate
+                ? `on ${formatReadableDate(selectedOrder.startDate)}`
+                : "after Operations sets a scheduled start date"}.
+            </Text>
+          </View>
+        ) : null}
+
         {/* Bottom Navigation */}
         <View style={styles.bottomBar}>
           <TouchableOpacity
@@ -2020,7 +2116,8 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
             }}
             disabled={savingAction || selectedOrder.status === "Completed" ||
               (isChiefMechanicRole && (!selectedOrder.mechanicSubmitted || getAutomaticInspectionRemark(selectedOrder.inspectionItems) === "Unverified")) ||
-              (isMechanicRole && selectedOrder.mechanicSubmitted)}
+              (isMechanicRole && selectedOrder.mechanicSubmitted) ||
+              (isMechanicRole && canManuallyStart && !startDateReached)}
           >
             <Text
               style={[
@@ -2775,6 +2872,19 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     shadowOffset: { width: 0, height: 2 },
   },
+  startDateNotice: {
+    position: "absolute",
+    left: 16,
+    right: 16,
+    bottom: 76,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+    backgroundColor: "#fff7ed",
+    borderWidth: 1,
+    borderColor: "#fed7aa",
+  },
+  startDateNoticeText: { color: "#9a3412", fontSize: 12, fontWeight: "600" },
   bottomButtonSecondary: {
     flex: 1,
     minHeight: 44,

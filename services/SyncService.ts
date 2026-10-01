@@ -3,6 +3,7 @@ import NetInfo, {
 } from "@react-native-community/netinfo";
 import axios, { type AxiosInstance, type AxiosRequestHeaders } from "axios";
 import { installMobileAuthRefresh } from "./mobileAuthRefresh";
+import { resolveCreatedDate } from "./workOrderDates";
 
 import { clearDatabase, initializeDatabase } from "../database/database";
 import type {
@@ -57,6 +58,7 @@ interface ServerMaintenanceSchedule {
   triggerType?: string | null;
   intervalType?: string | null;
   status: string;
+  startDate?: string | null;
   assignedMechanic?: string | null;
   assignedDriver?: string | null;
   accountType?: string | null;
@@ -226,11 +228,11 @@ export class SyncService {
       );
 
       const db = await initializeDatabase();
+      const maintenanceRepository = new MaintenanceRepository(db);
+      await this.syncPendingWorkOrderProgress(maintenanceRepository);
       await db.withExclusiveTransactionAsync(async (transaction) => {
         await new VehicleRepository(transaction).reconcileSnapshot(vehicles);
-        await new MaintenanceRepository(transaction).reconcileSnapshot(
-          schedules,
-        );
+        await new MaintenanceRepository(transaction).reconcileSnapshot(schedules);
         await new ChecklistRepository(transaction).reconcileSnapshot(
           templates,
           items,
@@ -266,6 +268,46 @@ export class SyncService {
       const message = getSyncErrorMessage(error);
       console.error(`[Sync] Synchronization failed: ${message}`, error);
       throw new Error(`Unable to synchronize mobile data: ${message}`);
+    }
+  }
+
+  private async syncPendingWorkOrderProgress(
+    repository: MaintenanceRepository,
+  ): Promise<void> {
+    const localSchedules = await repository.getMaintenanceSchedules();
+    for (const schedule of localSchedules) {
+      if (!schedule.workOrderProgress) continue;
+
+      let progress: Record<string, unknown>;
+      try {
+        const parsed: unknown = JSON.parse(schedule.workOrderProgress);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+        const storedProgress = parsed as Record<string, unknown>;
+        if (storedProgress._syncPending !== true) continue;
+        progress = { ...storedProgress };
+        delete progress._syncPending;
+        delete progress._localRevision;
+      } catch {
+        continue;
+      }
+
+      try {
+        const response = await this.api.patch<{
+          status?: string;
+          workOrderProgress?: Record<string, unknown>;
+        }>(`/maintenance-schedules/${schedule.id}/progress`, progress);
+        const confirmedProgress = response.data.workOrderProgress ?? progress;
+        await repository.updateWorkOrderProgress(
+          schedule.id,
+          JSON.stringify({ ...confirmedProgress, _syncPending: false }),
+          response.data.status,
+        );
+      } catch (error) {
+        console.warn(
+          `[Sync] Work order ${schedule.id} progress remains queued for retry`,
+          error,
+        );
+      }
     }
   }
 
@@ -394,6 +436,9 @@ function mapMaintenanceSchedule(
       ]),
       "maintenanceSchedule.status",
     ) as any,
+    startDate: optionalText(
+      findFirstValue(scheduleRecord, ["startDate", "start_date"]),
+    ),
     assignedMechanicId: extractStringValue(scheduleRecord, ["assignedMechanicId"]),
     chiefMechanicId: extractStringValue(scheduleRecord, ["chiefMechanicId"]),
     assignedMechanic: extractStringValue(scheduleRecord, [
@@ -505,7 +550,8 @@ function mapMaintenanceSchedule(
           "DeletedAt",
         ]),
       ) ?? null,
-    createdAt: validTimestampOrFallback(
+    createdAt: resolveCreatedDate(
+      findFirstValue(scheduleRecord, ["date", "createdDate", "created_date"]),
       findFirstValue(scheduleRecord, ["createdAt", "created_at"]),
       fallbackTimestamp,
     ),

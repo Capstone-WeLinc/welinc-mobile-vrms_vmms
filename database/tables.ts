@@ -1,5 +1,5 @@
 export const DATABASE_NAME = "vmms_mobile.db";
-export const DATABASE_VERSION = 5;
+export const DATABASE_VERSION = 6;
 
 // Enums matching Prisma schema
 export enum VehicleStatus {
@@ -57,6 +57,7 @@ export interface MaintenanceSchedule {
   title: string;
   garageId: string | null;
   status: MaintenanceStatus;
+  startDate: string | null;
   assignedMechanic: string | null;
   assignedMechanicId: string | null;
   chiefMechanicId: string | null;
@@ -115,6 +116,7 @@ export const CREATE_TABLES_SQL = `
     title TEXT NOT NULL,
     garageId TEXT,
     status TEXT NOT NULL CHECK (status IN ('PENDING', 'DUE', 'IN_PROGRESS', 'DONE', 'COMPLETED', 'OVERDUE', 'CANCELLED')),
+    startDate TEXT,
     assignedMechanic TEXT,
     assignedMechanicId TEXT,
     chiefMechanicId TEXT,
