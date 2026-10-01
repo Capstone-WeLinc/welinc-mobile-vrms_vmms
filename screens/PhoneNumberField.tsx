@@ -5,18 +5,18 @@ import { normalizePhoneNumber } from "../services/phoneNumber";
 // Only destinations supported by the configured SMS integration belong here.
 const supportedCountry = { name: "Philippines", callingCode: "+63" };
 
-export function PhoneNumberField({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+export function PhoneNumberField({ value, onChange, editable = true }: { value: string; onChange: (value: string) => void; editable?: boolean }) {
   const [choosingCountry, setChoosingCountry] = useState(false);
   const normalized = normalizePhoneNumber(value);
   const localNumber = normalized.startsWith("+63") ? normalized.slice(3) : value;
   return (
     <View>
-      <Pressable accessibilityRole="button" accessibilityLabel="Select SMS country. Philippines, plus 63" onPress={() => setChoosingCountry(true)} style={styles.selector}>
+      <Pressable accessibilityRole="button" accessibilityLabel="Select SMS country. Philippines, plus 63" disabled={!editable} onPress={() => setChoosingCountry(true)} style={styles.selector}>
         <Text style={styles.country}>{supportedCountry.name} ({supportedCountry.callingCode}) ▾</Text>
       </Pressable>
       <View style={styles.numberRow}>
         <Text style={styles.prefix}>+63</Text>
-        <TextInput style={styles.input} value={localNumber} onChangeText={(text) => {
+        <TextInput editable={editable} style={styles.input} value={localNumber} onChangeText={(text) => {
           if (!text.trim()) { onChange(""); return; }
           const compact = text.trim().replace(/[\s()-]/g, "");
           // Accept a pasted complete number as well as the national digits.

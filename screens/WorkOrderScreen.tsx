@@ -1,16 +1,26 @@
 import { workOrderStatusColors, workOrderStatusTextColor } from "./workOrderStatusColors";
 import {
+  getChangedExecutionItems,
   getChangedPartsSubmissionError,
   getChecklistSubmissionError,
-  normalizePartDetails,
+  mergeUploadedAttachments,
+  normalizePartDetailEntries,
+  type PartDetailEntry,
 } from "./workOrderSubmission";
 import { isWorkOrderStartDateReached } from "./workOrderStartDate";
+import { getPersistedWorkOrderNumber } from "./workOrderId";
 import { formatWorkOrderDate as formatReadableDate } from "../services/workOrderDates";
+import { MobilePageHeader } from "../components/MobilePageHeader";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Image,
+  Linking,
+  Modal,
+  Platform,
   Pressable,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -20,6 +30,7 @@ import {
 } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import * as DocumentPicker from "expo-document-picker";
+import { File, Paths } from "expo-file-system";
 import Svg, { Circle, Path } from "react-native-svg";
 
 import type { SyncService } from "../services/SyncService";
@@ -68,21 +79,6 @@ type InspectionRemark = "Verified" | "Rejected" | "For Repair" | "Unverified";
 type ScheduleDetail = {
   label: string;
   value: string;
-};
-
-type AttachmentItem = {
-  id: string;
-  name: string;
-  sizeMb: number;
-};
-
-type PartDetailEntry = {
-  partsUsed: string;
-  quantity: string;
-  materialCost: string;
-  attachments: AttachmentItem[];
-  attachmentName: string;
-  attachmentSizeMb: string;
 };
 
 type WorkOrder = {
@@ -141,12 +137,7 @@ const parseWorkOrderProgress = (
       executionItems: Array.isArray(parsed.executionItems)
         ? parsed.executionItems
         : executionItems,
-      partDetails:
-        parsed.partDetails &&
-        typeof parsed.partDetails === "object" &&
-        !Array.isArray(parsed.partDetails)
-          ? parsed.partDetails
-          : undefined,
+      partDetails: normalizePartDetailEntries(parsed.partDetails),
       inspectionItems: Array.isArray(parsed.inspectionItems)
         ? parsed.inspectionItems
         : [],
@@ -175,15 +166,6 @@ const parseWorkOrderProgress = (
   } catch {
     return {};
   }
-};
-
-const formatWorkOrderNumber = (value: string | null | undefined): string => {
-  if (!value) return "N/A";
-
-  const alphanumeric = value.match(/[A-Za-z0-9]/g)?.join("") ?? "";
-  const compactValue = alphanumeric.slice(0, 8).toUpperCase();
-
-  return compactValue ? `WO-${compactValue}` : "N/A";
 };
 
 const formatDisplayValue = (
@@ -257,7 +239,6 @@ const createDefaultPartDetailEntry = (): PartDetailEntry => ({
   materialCost: "",
   attachments: [],
   attachmentName: "",
-  attachmentSizeMb: "",
 });
 
 const buildExecutionItems = (
@@ -446,9 +427,10 @@ interface WorkOrderScreenProps {
   user: AuthenticatedUser;
   initialOrderId?: string | null;
   syncService?: SyncService;
+  onLoadingChange?: (loading: boolean) => void;
 }
 
-export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService }: WorkOrderScreenProps) {
+export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService, onLoadingChange }: WorkOrderScreenProps) {
   const saveQueue = useRef<Promise<unknown>>(Promise.resolve());
   const localSaveQueue = useRef<Promise<unknown>>(Promise.resolve());
   const syncWarningShown = useRef(false);
@@ -457,12 +439,34 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
   const [savingAction, setSavingAction] = useState(false);
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [pullRefreshing, setPullRefreshing] = useState(false);
+  const [reloadVersion, setReloadVersion] = useState(0);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [activeStep, setActiveStep] = useState<StepKey>("details");
+  const [previewAttachmentUri, setPreviewAttachmentUri] = useState<string | null>(null);
   const [aiAdvisoryLoading, setAiAdvisoryLoading] = useState(false);
   const [aiRecommendations, setAiRecommendations] =
     useState<WorkOrderRecommendationsResponse | null>(null);
+
+  const refreshWorkOrders = () => {
+    if (isLoading || pullRefreshing) return;
+    setPullRefreshing(true);
+    onLoadingChange?.(true);
+    const reloadFromCache = () => setReloadVersion((version) => version + 1);
+    if (syncService) {
+      void syncService.sync()
+        .catch((error) => console.warn("[WorkOrderScreen] Pull-to-refresh sync failed", error))
+        .finally(reloadFromCache);
+    } else {
+      reloadFromCache();
+    }
+  };
+
+  useEffect(() => {
+    onLoadingChange?.(isLoading);
+    return () => onLoadingChange?.(false);
+  }, [isLoading, onLoadingChange]);
 
   useEffect(() => {
     let mounted = true;
@@ -470,7 +474,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
     async function loadWorkOrders(): Promise<void> {
       setIsLoading(true);
       try {
-        if (initialOrderId && syncService) {
+        if (initialOrderId && syncService && reloadVersion === 0) {
           await syncService.sync();
         }
         if (!mounted) return;
@@ -521,7 +525,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
 
             return {
               id: schedule.id,
-              number: formatWorkOrderNumber(schedule.id),
+              number: getPersistedWorkOrderNumber(schedule.workOrderNumber),
               plate: vehicle?.plateNumber ?? schedule.vehicleId,
               maintenanceType: schedule.title,
               mechanic: schedule.assignedMechanic || "Unassigned",
@@ -547,7 +551,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
               scheduleDetails: [
                 {
                   label: "Work Order No.",
-                  value: formatWorkOrderNumber(schedule.id),
+                  value: getPersistedWorkOrderNumber(schedule.workOrderNumber),
                 },
                 {
                   label: "Vehicle",
@@ -615,7 +619,10 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
                 },
               ],
               executionItems: savedExecutionItems,
-              partDetails: savedProgress.partDetails ?? partDetails,
+              partDetails: {
+                ...partDetails,
+                ...normalizePartDetailEntries(savedProgress.partDetails),
+              },
               inspectionItems: savedInspectionItems,
               chiefMechanic: savedProgress.chiefMechanic ?? "",
               inspectorRemarks: savedProgress.inspectorRemarks ?? "",
@@ -651,7 +658,11 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
         console.error("[WorkOrderScreen] Failed to load work orders", error);
         if (mounted && initialOrderId) Alert.alert("Unable to open work order", "Check your connection and tap the notification again.");
       } finally {
-        if (mounted) setIsLoading(false);
+        if (mounted) {
+          setIsLoading(false);
+          setPullRefreshing(false);
+          onLoadingChange?.(false);
+        }
       }
     }
 
@@ -659,7 +670,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
     return () => {
       mounted = false;
     };
-  }, [initialOrderId, syncService, accessRole, user.id]);
+  }, [initialOrderId, syncService, accessRole, user.id, reloadVersion]);
 
   useEffect(() => {
     if (!selectedOrderId) {
@@ -704,13 +715,14 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
               return order;
             }
 
+            const savedPartDetails = normalizePartDetailEntries(order.partDetails);
             const partDetails = executionItems.reduce<
               Record<string, PartDetailEntry>
             >(
               (accumulator, item) => ({
                 ...accumulator,
                 [item.id]:
-                  order.partDetails[item.id] ?? createDefaultPartDetailEntry(),
+                  savedPartDetails[item.id] ?? createDefaultPartDetailEntry(),
               }),
               {},
             );
@@ -773,9 +785,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
         executionItems: Array.isArray(selectedOrderRecord.executionItems)
           ? selectedOrderRecord.executionItems
           : [],
-        partDetails: normalizePartDetails<PartDetailEntry>(
-          selectedOrderRecord.partDetails,
-        ),
+        partDetails: normalizePartDetailEntries(selectedOrderRecord.partDetails),
         inspectionItems: Array.isArray(selectedOrderRecord.inspectionItems)
           ? selectedOrderRecord.inspectionItems
           : [],
@@ -794,7 +804,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
   const currentUserDisplayName = user.name.trim();
 
   const persistWorkOrder = (order: WorkOrder, _status?: string, action = "SAVE") => {
-    const partDetails = normalizePartDetails<PartDetailEntry>(order.partDetails);
+    const partDetails = normalizePartDetailEntries(order.partDetails);
     const partsCost = Object.values(partDetails).reduce((total, entry) => {
       if (typeof entry?.partsUsed !== "string" || !entry.partsUsed.trim()) return total;
       const cost = Number.parseFloat(entry.materialCost);
@@ -936,7 +946,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
     const normalizedOrder = {
       ...order,
       executionItems: Array.isArray(order.executionItems) ? order.executionItems : [],
-      partDetails: normalizePartDetails<PartDetailEntry>(order.partDetails),
+      partDetails: normalizePartDetailEntries(order.partDetails),
       inspectionItems: Array.isArray(order.inspectionItems) ? order.inspectionItems : [],
       scheduleDetails: Array.isArray(order.scheduleDetails) ? order.scheduleDetails : [],
     };
@@ -1086,33 +1096,83 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
     attachment: PartDetailEntry["attachments"][number],
   ) => {
     updateWorkOrder(orderId, (order) => {
-      const existing = order.partDetails[itemId] ?? createDefaultPartDetailEntry();
+      const existing = normalizePartDetailEntries({ [itemId]: order.partDetails[itemId] })[itemId] ?? createDefaultPartDetailEntry();
       return {
         ...order,
         partDetails: {
           ...order.partDetails,
           [itemId]: {
             ...existing,
-            attachments: [...existing.attachments, attachment],
+            attachments: mergeUploadedAttachments(existing.attachments, attachment),
             attachmentName: "",
-            attachmentSizeMb: "",
           },
         },
       };
     });
   };
 
+  const viewAttachment = async (orderId: string, attachment: PartDetailEntry["attachments"][number]) => {
+    try {
+      const auth = new AuthService(API_BASE_URL);
+      const extension = attachment.name.match(/\.[a-z0-9]+$/i)?.[0] ?? "";
+      const localFile = new File(Paths.cache, `${attachment.id}${extension}`);
+      const fileBytes = await auth.downloadMaintenanceAttachment(orderId, attachment.id);
+      localFile.create({ intermediates: true, overwrite: true });
+      localFile.write(fileBytes);
+      const isImage = attachment.contentType?.startsWith("image/") ||
+        /\.(avif|gif|jpe?g|png|webp)$/i.test(attachment.name);
+      if (isImage) {
+        setPreviewAttachmentUri(localFile.uri);
+        return;
+      }
+      // Android external viewers cannot access an app-private file:// URI.
+      const openUri = Platform.OS === "android" ? localFile.contentUri : localFile.uri;
+      await Linking.openURL(openUri);
+    } catch (error) {
+      Alert.alert("Attachment unavailable", error instanceof Error ? error.message : "Could not open this attachment.");
+    }
+  };
+
+  const removeAttachment = async (orderId: string, itemId: string, attachmentId: string) => {
+    try {
+      await new AuthService(API_BASE_URL).deleteMaintenanceAttachment(orderId, attachmentId);
+      const updatedOrder = workOrders.find((order) => order.id === orderId);
+      if (!updatedOrder) return;
+      const entry = normalizePartDetailEntries({ [itemId]: updatedOrder.partDetails[itemId] })[itemId] ?? createDefaultPartDetailEntry();
+      const partDetails = {
+        ...updatedOrder.partDetails,
+        [itemId]: { ...entry, attachments: entry.attachments.filter((file) => file.id !== attachmentId) },
+      };
+      const progress = {
+        executionItems: updatedOrder.executionItems,
+        partDetails,
+        inspectionItems: updatedOrder.inspectionItems,
+        chiefMechanic: updatedOrder.chiefMechanic,
+        inspectorRemarks: updatedOrder.inspectorRemarks,
+        approvalStatus: updatedOrder.approvalStatus,
+        mechanicSubmitted: updatedOrder.mechanicSubmitted,
+        workflowStatus: updatedOrder.status,
+      };
+      setWorkOrders((orders) => orders.map((order) => order.id === orderId
+        ? { ...order, partDetails, workOrderProgress: JSON.stringify(progress) }
+        : order));
+      const db = await getDatabase();
+      await new MaintenanceRepository(db).updateWorkOrderProgress(orderId, JSON.stringify(progress));
+    } catch (error) {
+      Alert.alert("Could not delete attachment", error instanceof Error ? error.message : "Try again.");
+    }
+  };
+
   const addAttachmentToItem = async (orderId: string, itemId: string) => {
     const order = workOrders.find((item) => item.id === orderId);
     if (!order) return;
 
-    const currentEntry = order.partDetails[itemId] ?? {
+    const currentEntry = normalizePartDetailEntries({ [itemId]: order.partDetails[itemId] })[itemId] ?? {
       partsUsed: "",
       quantity: "",
       materialCost: "",
       attachments: [],
       attachmentName: "",
-      attachmentSizeMb: "",
     };
 
     if (currentEntry.attachments.length >= 5) {
@@ -1135,8 +1195,10 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
       }
 
       return ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.All,
+        mediaTypes: ["images"],
         allowsEditing: false,
+        allowsMultipleSelection: true,
+        selectionLimit: Math.max(1, 5 - currentEntry.attachments.length),
         quality: 0.8,
       });
     };
@@ -1160,8 +1222,9 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
 
     const pickFile = async () => {
       const result = await DocumentPicker.getDocumentAsync({
-        type: ["image/*", "application/pdf", "text/plain"],
+        type: ["image/jpeg", "image/png"],
         copyToCacheDirectory: true,
+        multiple: true,
       });
 
       if ("canceled" in result && result.canceled) {
@@ -1171,27 +1234,65 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
       return result;
     };
 
+    const uploadFile = async (uri: string, name: string, type: string) => {
+      try {
+        await saveQueue.current.catch(() => undefined);
+        const uploaded = await new AuthService(API_BASE_URL).uploadMaintenanceAttachment(
+          orderId, itemId, { uri, name, type },
+        );
+        appendAttachmentToItem(orderId, itemId, uploaded);
+      } catch (error) {
+        Alert.alert("Attachment upload failed", error instanceof Error ? error.message : "Try again when online.");
+      }
+    };
+
+    const uploadPickedFiles = async (
+      files: Array<{ uri: string; name: string; type: string; size?: number }>,
+    ) => {
+      const remainingSlots = 5 - currentEntry.attachments.length;
+      if (files.length > remainingSlots) {
+        Alert.alert("Attachment limit reached", `Select up to ${remainingSlots} more file(s) for this item.`);
+        return;
+      }
+
+      for (const file of files) {
+        const extension = file.name.split(".").pop()?.toLowerCase();
+        const mimeType = file.type.toLowerCase().split(";")[0].trim();
+        const supportedMimeType = mimeType === "image/jpeg" || mimeType === "image/jpg"
+          ? "image/jpeg"
+          : mimeType === "image/png"
+            ? "image/png"
+            : null;
+        const supportedExtension = extension === "jpg" || extension === "jpeg"
+          ? "image/jpeg"
+          : extension === "png"
+            ? "image/png"
+            : null;
+        const normalizedType = supportedMimeType ?? (mimeType === "" || mimeType === "application/octet-stream" ? supportedExtension : null);
+        if (!normalizedType) {
+          Alert.alert("Unsupported file type", `${file.name} was skipped. Attachments must be JPG, JPEG, or PNG images.`);
+          continue;
+        }
+        if (file.size !== undefined && file.size > 5 * 1024 * 1024) {
+          Alert.alert("Maximum size exceeded", `${file.name} is larger than 5 MB and was skipped.`);
+          continue;
+        }
+        await uploadFile(file.uri, file.name, normalizedType);
+      }
+    };
+
     Alert.alert("Add attachment", "Choose how you want to add the attachment", [
       {
         text: "Gallery",
         onPress: async () => {
           const result = await pickMedia();
           if (!result || result.canceled) return;
-          const asset = result.assets?.[0];
-          if (!asset) return;
-          const fileSizeMb = (asset.fileSize ?? 0) / (1024 * 1024);
-          if (fileSizeMb > 5) {
-            Alert.alert(
-              "Maximum size exceeded",
-              "Each attachment must be 5 MB or less.",
-            );
-            return;
-          }
-          appendAttachmentToItem(orderId, itemId, {
-            id: `${itemId}-${Date.now()}`,
-            name: asset.fileName ?? "Gallery attachment",
-            sizeMb: Number(fileSizeMb.toFixed(2)),
-          });
+          await uploadPickedFiles((result.assets ?? []).map((asset, index) => ({
+            uri: asset.uri,
+            name: asset.fileName ?? `Gallery attachment ${index + 1}.jpg`,
+            type: asset.mimeType ?? "image/jpeg",
+            size: asset.fileSize,
+          })));
         },
       },
       {
@@ -1209,11 +1310,12 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
             );
             return;
           }
-          appendAttachmentToItem(orderId, itemId, {
-            id: `${itemId}-${Date.now()}`,
-            name: asset.fileName ?? "Camera photo",
-            sizeMb: Number(fileSizeMb.toFixed(2)),
-          });
+          await uploadPickedFiles([{
+            uri: asset.uri,
+            name: asset.fileName ?? "Camera photo.jpg",
+            type: asset.mimeType ?? "image/jpeg",
+            size: asset.fileSize,
+          }]);
         },
       },
       {
@@ -1221,19 +1323,12 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
         onPress: async () => {
           const result = await pickFile();
           if (!result) return;
-          const fileSizeMb = (result.assets?.[0]?.size ?? 0) / (1024 * 1024);
-          if (fileSizeMb > 5) {
-            Alert.alert(
-              "Maximum size exceeded",
-              "Each attachment must be 5 MB or less.",
-            );
-            return;
-          }
-          appendAttachmentToItem(orderId, itemId, {
-            id: `${itemId}-${Date.now()}`,
-            name: result.assets?.[0]?.name ?? "File attachment",
-            sizeMb: Number(fileSizeMb.toFixed(2)),
-          });
+          await uploadPickedFiles((result.assets ?? []).map((asset) => ({
+            uri: asset.uri,
+            name: asset.name,
+            type: asset.mimeType ?? "application/octet-stream",
+            size: asset.size,
+          })));
         },
       },
       { text: "Cancel", style: "cancel" },
@@ -1244,7 +1339,11 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
     const order = workOrders.find((o) => o.id === orderId);
     if (!order) return "0.00";
 
-    const total = Object.values(normalizePartDetails<PartDetailEntry>(order.partDetails)).reduce((sum, entry) => {
+    const changedItemIds = new Set(
+      getChangedExecutionItems(order.executionItems).map((item) => item.id),
+    );
+    const total = Object.entries(normalizePartDetailEntries(order.partDetails)).reduce((sum, [itemId, entry]) => {
+      if (!changedItemIds.has(itemId)) return sum;
       if (typeof entry?.partsUsed !== "string" || !entry.partsUsed.trim()) return sum;
       const cost = Number.parseFloat(entry.materialCost || "0");
       return sum + (Number.isNaN(cost) ? 0 : cost);
@@ -1265,7 +1364,9 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
     ...(isMechanicRole
       ? [
           { key: "execution" as StepKey, label: "Execution" },
-          { key: "parts" as StepKey, label: "Parts, Cost & Photos" },
+          ...(selectedOrder && getChangedExecutionItems(selectedOrder.executionItems).length > 0
+            ? [{ key: "parts" as StepKey, label: "Parts, Cost & Photos" }]
+            : []),
         ]
       : [{ key: "inspection" as StepKey, label: "Inspection Checklist" }]),
   ];
@@ -1604,14 +1705,44 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
         selectedOrder.approvalStatus === "Verified" ||
         selectedOrder.status !== "In Progress") &&
       selectedOrder.approvalStatus !== "Rejected";
-    const recordedParts = selectedOrder.executionItems.flatMap((item) => {
+    const recordedParts = getChangedExecutionItems(selectedOrder.executionItems).flatMap((item) => {
       const entry = selectedOrder.partDetails[item.id];
-      return typeof entry?.partsUsed === "string" && entry.partsUsed.trim()
+      return (typeof entry?.partsUsed === "string" && entry.partsUsed.trim()) || entry?.attachments?.length
         ? [{ item, entry }]
         : [];
     });
     return (
       <View style={styles.container}>
+        <Modal
+          visible={previewAttachmentUri !== null}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setPreviewAttachmentUri(null)}
+        >
+          <Pressable
+            style={styles.attachmentPreviewBackdrop}
+            onPress={() => setPreviewAttachmentUri(null)}
+            accessibilityRole="button"
+            accessibilityLabel="Close attachment preview"
+          >
+            {previewAttachmentUri ? (
+              <View
+                style={styles.attachmentPreviewImageFrame}
+                onStartShouldSetResponder={() => true}
+              >
+                <Image
+                  source={{ uri: previewAttachmentUri }}
+                  style={styles.attachmentPreviewImage}
+                  resizeMode="contain"
+                  onError={() => {
+                    setPreviewAttachmentUri(null);
+                    Alert.alert("Attachment unavailable", "The image could not be decoded. Please upload it again.");
+                  }}
+                />
+              </View>
+            ) : null}
+          </Pressable>
+        </Modal>
         {/* Detail Header */}
         <View style={styles.detailHeaderBar}>
           <TouchableOpacity
@@ -1655,7 +1786,10 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
           ))}
         </View>
 
-        <ScrollView contentContainerStyle={styles.detailContent}>
+        <ScrollView
+          contentContainerStyle={styles.detailContent}
+          refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={refreshWorkOrders} colors={["#1a1f6e", "#d4a93f"]} tintColor="#1a1f6e" progressBackgroundColor="#ffffff" />}
+        >
           {/* Step 1: Details */}
           {activeStep === "details" && (
             <>
@@ -1715,9 +1849,24 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
                           </View>
                         </View>
                         {Array.isArray(entry.attachments) && entry.attachments.length > 0 ? (
-                          <Text style={styles.partsValue}>
-                            Attachments: {entry.attachments.map((file) => file.name).join(", ")}
-                          </Text>
+                          <View style={styles.partsItemRow}>
+                            {entry.attachments.map((file) => (
+                              <View key={file.id} style={styles.attachmentActionRow}>
+                                {file.storageName ? (
+                                  <TouchableOpacity onPress={() => void viewAttachment(selectedOrder.id, file)}>
+                                    <Text style={[styles.partsValue, styles.attachmentLink]}>View {file.name}</Text>
+                                  </TouchableOpacity>
+                                ) : (
+                                  <Text style={styles.legacyAttachmentText}>Re-upload “{file.name}” to make it viewable.</Text>
+                                )}
+                                {isMechanicRole && selectedOrder.assignedMechanicId === user.id && file.storageName && (
+                                  <TouchableOpacity onPress={() => void removeAttachment(selectedOrder.id, item.id, file.id)}>
+                                    <Text style={styles.attachmentDelete}>Delete</Text>
+                                  </TouchableOpacity>
+                                )}
+                              </View>
+                            ))}
+                          </View>
                         ) : null}
                       </View>
                     ))
@@ -1819,14 +1968,13 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
                 Record any parts or materials used against the relevant checklist item. Parts, quantity, cost, and an attachment are required for items marked Changed.
               </Text>
 
-              {selectedOrder.executionItems.map((item) => {
+              {getChangedExecutionItems(selectedOrder.executionItems).map((item) => {
                 const partEntry = selectedOrder.partDetails[item.id] ?? {
                   partsUsed: "",
                   quantity: "",
                   materialCost: "",
                   attachments: [],
                   attachmentName: "",
-                  attachmentSizeMb: "",
                 };
 
                 return (
@@ -1895,37 +2043,6 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
                       </View>
                     </View>
                     <Text style={styles.partsLabel}>Photos / Attachments</Text>
-                    <TextInput
-                      style={styles.partsInput}
-                      editable={!mechanicOrderLocked}
-                      value={partEntry.attachmentName}
-                      onChangeText={(text) =>
-                        updatePartDetailField(
-                          selectedOrder.id,
-                          item.id,
-                          "attachmentName",
-                          text,
-                        )
-                      }
-                      placeholder="Attachment name"
-                      placeholderTextColor="#94a3b8"
-                    />
-                    <TextInput
-                      style={styles.partsInput}
-                      editable={!mechanicOrderLocked}
-                      value={partEntry.attachmentSizeMb}
-                      keyboardType="numeric"
-                      onChangeText={(text) =>
-                        updatePartDetailField(
-                          selectedOrder.id,
-                          item.id,
-                          "attachmentSizeMb",
-                          text,
-                        )
-                      }
-                      placeholder="Size in MB (max 5)"
-                      placeholderTextColor="#94a3b8"
-                    />
                     <TouchableOpacity
                       style={styles.uploadButton}
                       disabled={mechanicOrderLocked}
@@ -1934,7 +2051,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
                       }
                     >
                       <Text style={styles.uploadButtonText}>
-                        Add Attachment ({partEntry.attachments.length}/5)
+                        Add Attachments ({partEntry.attachments.length}/5)
                       </Text>
                     </TouchableOpacity>
                     {partEntry.attachments.length === 0 ? (
@@ -1944,9 +2061,20 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
                     ) : (
                       partEntry.attachments.map((attachment) => (
                         <View key={attachment.id} style={styles.partsItemRow}>
-                          <Text style={styles.partsValue}>
-                            • {attachment.name} ({attachment.sizeMb} MB)
-                          </Text>
+                          {attachment.storageName ? (
+                            <TouchableOpacity onPress={() => void viewAttachment(selectedOrder.id, attachment)}>
+                              <Text style={[styles.partsValue, styles.attachmentLink]}>
+                                {attachment.name} ({attachment.sizeMb} MB) · View
+                              </Text>
+                            </TouchableOpacity>
+                          ) : (
+                            <Text style={styles.legacyAttachmentText}>Re-upload “{attachment.name}” to make it viewable.</Text>
+                          )}
+                          {isMechanicRole && selectedOrder.assignedMechanicId === user.id && attachment.storageName && !mechanicOrderLocked && (
+                            <TouchableOpacity onPress={() => void removeAttachment(selectedOrder.id, item.id, attachment.id)}>
+                              <Text style={styles.attachmentDelete}>Delete</Text>
+                            </TouchableOpacity>
+                          )}
                         </View>
                       ))
                     )}
@@ -1954,7 +2082,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
                 );
               })}
 
-              {selectedOrder.executionItems.length === 0 && (
+              {getChangedExecutionItems(selectedOrder.executionItems).length === 0 && (
                 <Text style={styles.emptyPartsText}>
                   No checklist items are available for recording parts.
                 </Text>
@@ -2145,15 +2273,13 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
 
   return (
     <View style={styles.container}>
-      <View style={styles.headerCard}>
-        <View style={styles.headerTextBlock}>
-          <Text style={styles.title}>WORK ORDERS</Text>
-          <Text style={styles.subtitle}>
-            {isChiefMechanicRole
-              ? "Review and verify inspection checklists"
-              : "Your assigned work orders grouped by mechanic"}
-          </Text>
-        </View>
+      <View style={styles.pageHeader}>
+        <MobilePageHeader
+          title="Work Orders"
+          subtitle={isChiefMechanicRole
+            ? "Review and verify inspection checklists"
+            : "Your assigned work orders grouped by mechanic"}
+        />
       </View>
 
       <View style={styles.searchRow}>
@@ -2172,7 +2298,10 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
         </TouchableOpacity>
       </View>
 
-      <ScrollView contentContainerStyle={styles.listContent}>
+      <ScrollView
+        contentContainerStyle={styles.listContent}
+        refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={refreshWorkOrders} colors={["#1a1f6e", "#d4a93f"]} tintColor="#1a1f6e" progressBackgroundColor="#ffffff" />}
+      >
         {isLoading ? (
           <View style={styles.emptyStateCard}>
             <Text style={styles.emptyStateTitle}>Loading work orders…</Text>
@@ -2248,21 +2377,9 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService 
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#f1f5f9", padding: 16 },
-  headerCard: {
-    backgroundColor: "#ffffff",
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: "#e2e8f0",
-    padding: 16,
+  pageHeader: {
     marginBottom: 12,
-    shadowColor: "#000",
-    shadowOpacity: 0.04,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 2 },
   },
-  headerTextBlock: { gap: 4 },
-  title: { fontSize: 24, fontWeight: "800", color: "#0d0d0d" },
-  subtitle: { color: "#64748b", fontSize: 13 },
   searchRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -2654,6 +2771,40 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "600",
     color: "#0d0d0d",
+  },
+  attachmentLink: {
+    color: "#1a1f6e",
+    textDecorationLine: "underline",
+  },
+  attachmentDelete: {
+    color: "#b91c1c",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  legacyAttachmentText: {
+    color: "#92400e",
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  attachmentActionRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  attachmentPreviewBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0, 0, 0, 0.94)",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 28,
+  },
+  attachmentPreviewImageFrame: {
+    width: "88%",
+    height: "76%",
+  },
+  attachmentPreviewImage: {
+    width: "100%",
+    height: "85%",
   },
   partsInput: {
     borderWidth: 1,

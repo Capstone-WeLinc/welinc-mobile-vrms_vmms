@@ -200,6 +200,18 @@ export class AuthService {
     return response.data;
   }
 
+  async changeOwnPassword(input: {
+    currentPassword: string;
+    newPassword: string;
+    confirmPassword: string;
+  }): Promise<void> {
+    const token = await this.getAccessToken();
+    if (!token) throw new Error("Please log in again.");
+    await this.api.patch("/auth/profile/password", input, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  }
+
   async getChiefMechanics(): Promise<MobileUserSummary[]> {
     const token = await this.getAccessToken();
     if (!token) return [];
@@ -245,6 +257,49 @@ export class AuthService {
       { headers: { Authorization: `Bearer ${token}` } },
     );
     return response.data;
+  }
+
+  async uploadMaintenanceAttachment(
+    scheduleId: string,
+    itemId: string,
+    file: { uri: string; name: string; type: string },
+  ): Promise<{ id: string; name: string; sizeMb: number; contentType: string; storageName: string }> {
+    const token = await this.getAccessToken();
+    if (!token) throw new Error("Please log in again.");
+    const body = new FormData();
+    body.append("itemId", itemId);
+    body.append("file", file as unknown as Blob);
+    const response = await this.api.post(
+      `/maintenance-schedules/${scheduleId}/attachments`,
+      body,
+      { headers: { Authorization: `Bearer ${token}`, "Content-Type": "multipart/form-data" } },
+    );
+    return response.data;
+  }
+
+  async deleteMaintenanceAttachment(scheduleId: string, attachmentId: string): Promise<void> {
+    const token = await this.getAccessToken();
+    if (!token) throw new Error("Please log in again.");
+    await this.api.delete(
+      `/maintenance-schedules/${scheduleId}/attachments/${attachmentId}`,
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+  }
+
+  async downloadMaintenanceAttachment(
+    scheduleId: string,
+    attachmentId: string,
+  ): Promise<Uint8Array> {
+    const token = await this.getAccessToken();
+    if (!token) throw new Error("Please log in again.");
+    const response = await this.api.get<ArrayBuffer>(
+      `/maintenance-schedules/${scheduleId}/attachments/${attachmentId}`,
+      {
+        responseType: "arraybuffer",
+        headers: { Authorization: `Bearer ${token}` },
+      },
+    );
+    return new Uint8Array(response.data);
   }
 
   async clearSession(): Promise<void> {

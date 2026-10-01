@@ -1,11 +1,15 @@
 import { StatusBar } from "expo-status-bar";
 import * as SQLite from "expo-sqlite";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ReactElement } from "react";
 import {
+  Animated,
   ActivityIndicator,
+  Dimensions,
+  Easing,
   Image,
   Modal,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -19,6 +23,7 @@ import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { clearDatabase, initializeDatabase } from "./database/database";
 import { DATABASE_NAME } from "./database/tables";
 import { DashboardScreen } from "./screens/DashboardScreen";
+import { MobilePageHeader } from "./components/MobilePageHeader";
 import { LoginScreen } from "./screens/LoginScreen";
 import { SplashScreen } from "./screens/SplashScreen";
 import { PhoneNumberField } from "./screens/PhoneNumberField";
@@ -36,6 +41,37 @@ import { SyncService } from "./services/SyncService";
 
 const authService = new AuthService(API_BASE_URL);
 const welinc = require("./assets/welinc_logo.jpg");
+
+function NavbarRefreshLine({ visible }: { visible: boolean }) {
+  const progress = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    if (!visible) {
+      progress.setValue(0);
+      return;
+    }
+    const animation = Animated.loop(
+      Animated.timing(progress, {
+        toValue: 1,
+        duration: 900,
+        easing: Easing.linear,
+        useNativeDriver: true,
+      }),
+    );
+    animation.start();
+    return () => animation.stop();
+  }, [progress, visible]);
+
+  if (!visible) return null;
+  const translateX = progress.interpolate({
+    inputRange: [0, 1],
+    outputRange: [-96, Dimensions.get("window").width],
+  });
+  return (
+    <View style={styles.navbarRefreshTrack} pointerEvents="none">
+      <Animated.View style={[styles.navbarRefreshSegment, { transform: [{ translateX }] }]} />
+    </View>
+  );
+}
 
 const syncService = new SyncService({
   apiBaseUrl: API_BASE_URL,
@@ -130,9 +166,6 @@ function ConfirmationDialog({
   message,
   confirmLabel,
   variant,
-  requirePassword = false,
-  password,
-  onPasswordChange,
   onConfirm,
   onCancel,
 }: {
@@ -141,9 +174,6 @@ function ConfirmationDialog({
   message: string;
   confirmLabel: string;
   variant: "primary" | "danger";
-  requirePassword?: boolean;
-  password?: string;
-  onPasswordChange?: (value: string) => void;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
@@ -159,18 +189,6 @@ function ConfirmationDialog({
           <Text style={styles.confirmationTitle}>{title}</Text>
           <View style={styles.confirmationDivider} />
           <Text style={styles.confirmationMessage}>{message}</Text>
-
-          {requirePassword ? (
-            <TextInput
-              style={styles.confirmationPasswordInput}
-              value={password}
-              onChangeText={onPasswordChange}
-              placeholder="Enter your password to confirm"
-              placeholderTextColor="#9a8f8f"
-              secureTextEntry
-              autoCapitalize="none"
-            />
-          ) : null}
 
           <View style={styles.confirmationActions}>
             <TouchableOpacity
@@ -213,21 +231,30 @@ export default function App() {
   });
   const [profileMessage, setProfileMessage] = useState<string | null>(null);
   const [profileSaving, setProfileSaving] = useState(false);
+  const [profileEditing, setProfileEditing] = useState(false);
   const [passwordMessage, setPasswordMessage] = useState<string | null>(null);
-  const [deleteRequestMessage, setDeleteRequestMessage] = useState<string | null>(null);
-  const [confirmation, setConfirmation] = useState<"logout" | "deletion" | null>(null);
-  const [deletePassword, setDeletePassword] = useState("");
+  const [passwordSaving, setPasswordSaving] = useState(false);
+  const [confirmation, setConfirmation] = useState<"logout" | null>(null);
   const [passwordForm, setPasswordForm] = useState({
     current: "",
     next: "",
     confirm: "",
   });
   const [showSplash, setShowSplash] = useState(true);
+  const [isPageRefreshing, setIsPageRefreshing] = useState(false);
+  const [profileRefreshing, setProfileRefreshing] = useState(false);
+  const [profilePullRefreshing, setProfilePullRefreshing] = useState(false);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [activeScreen, setActiveScreen] = useState<
     "dashboard" | "work-orders" | "notifications" | "profile"
   >("dashboard");
+  const [navigationReloadKey, setNavigationReloadKey] = useState(0);
+  const hasPasswordInput = Object.values(passwordForm).some((value) => value.length > 0);
+  const passwordFormComplete = Boolean(
+    passwordForm.current && passwordForm.next && passwordForm.confirm &&
+      passwordForm.next === passwordForm.confirm,
+  );
 
   useEffect(() => {
     if (!user) return;
@@ -301,7 +328,6 @@ export default function App() {
 
   const closeConfirmation = () => {
     setConfirmation(null);
-    setDeletePassword("");
   };
 
   const saveProfile = async () => {
@@ -338,6 +364,7 @@ export default function App() {
         contact: updatedUser.contact ?? "",
       });
       setProfileMessage("Personal details saved.");
+      setProfileEditing(false);
       setTimeout(() => setProfileMessage(null), 2500);
     } catch (error) {
       setProfileMessage(
@@ -348,7 +375,7 @@ export default function App() {
     }
   };
 
-  const validatePasswordForm = () => {
+  const validatePasswordForm = async () => {
     if (!passwordForm.current || !passwordForm.next || !passwordForm.confirm) {
       setPasswordMessage("Complete all required password fields.");
       return;
@@ -357,20 +384,50 @@ export default function App() {
       setPasswordMessage("New password and confirmation must match.");
       return;
     }
-    setPasswordMessage("Password fields are ready to update.");
-    setTimeout(() => setPasswordMessage(null), 2500);
+    if (!/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$/.test(passwordForm.next)) {
+      setPasswordMessage("Password must be at least 8 characters and include uppercase, lowercase, number, and special character.");
+      return;
+    }
+    if (passwordSaving || !user) return;
+
+    setPasswordSaving(true);
+    setPasswordMessage(null);
+    try {
+      await authService.changeOwnPassword({
+        currentPassword: passwordForm.current,
+        newPassword: passwordForm.next,
+        confirmPassword: passwordForm.confirm,
+      });
+      const updatedUser = await authService.login(user.email, passwordForm.next);
+      setUser(updatedUser);
+      setPasswordForm({ current: "", next: "", confirm: "" });
+      setPasswordMessage("Password updated successfully.");
+    } catch (error) {
+      setPasswordMessage(error instanceof Error ? error.message : "Unable to update password.");
+    } finally {
+      setPasswordSaving(false);
+    }
   };
 
-  const requestAccountDeletion = () => {
-    setConfirmation("deletion");
-  };
-
-  const confirmAccountDeletion = () => {
-    if (!deletePassword.trim()) return;
-
-    closeConfirmation();
-    setDeleteRequestMessage("Account deletion request submitted.");
-    setTimeout(() => setDeleteRequestMessage(null), 3000);
+  const refreshProfile = async (fromPullToRefresh = false) => {
+    if (profileRefreshing) return;
+    setProfileRefreshing(true);
+    if (fromPullToRefresh) setProfilePullRefreshing(true);
+    setIsPageRefreshing(true);
+    try {
+      const refreshedUser = await authService.restoreSession();
+      if (!refreshedUser) {
+        throw new Error("Your session could not be restored. Please sign in again.");
+      }
+      setUser(refreshedUser);
+      setProfileMessage(null);
+    } catch (error) {
+      setProfileMessage(error instanceof Error ? error.message : "Unable to refresh your profile.");
+    } finally {
+      setProfileRefreshing(false);
+      setProfilePullRefreshing(false);
+      setIsPageRefreshing(false);
+    }
   };
 
   const navigateTo = (
@@ -378,6 +435,9 @@ export default function App() {
   ) => {
     setNotificationOrderId(null);
     setActiveScreen(screen);
+    setNavigationReloadKey((key) => key + 1);
+    if (screen === "notifications") void inbox.refresh();
+    if (screen === "profile") void refreshProfile();
   };
 
   const globalSearchItems = [
@@ -531,25 +591,14 @@ export default function App() {
 
         <ConfirmationDialog
           visible={confirmation !== null}
-          title={confirmation === "deletion" ? "Account deletion" : "Confirm sign out"}
-          message={
-            confirmation === "deletion"
-              ? "Are you sure you want to request account deletion?"
-              : "Are you sure you want to sign out of your account?"
-          }
-          confirmLabel={confirmation === "deletion" ? "Yes" : "Sign out"}
+          title="Confirm sign out"
+          message="Are you sure you want to sign out of your account?"
+          confirmLabel="Sign out"
           variant="danger"
-          requirePassword={confirmation === "deletion"}
-          password={deletePassword}
-          onPasswordChange={setDeletePassword}
-          onConfirm={
-            confirmation === "deletion"
-              ? confirmAccountDeletion
-              : () => {
-                  closeConfirmation();
-                  void logout();
-                }
-          }
+          onConfirm={() => {
+            closeConfirmation();
+            void logout();
+          }}
           onCancel={closeConfirmation}
         />
 
@@ -575,23 +624,40 @@ export default function App() {
             );
           })}
         </View>
+        <NavbarRefreshLine visible={isPageRefreshing} />
 
         {activeScreen === "dashboard" ? (
           <DashboardScreen
+            key={navigationReloadKey}
             user={user}
             syncService={syncService}
             onLogout={logout}
+            onLoadingChange={setIsPageRefreshing}
           />
         ) : activeScreen === "work-orders" ? (
-          <WorkOrderScreen accessRole={accessRole} user={user} initialOrderId={notificationOrderId} syncService={syncService} />
+          <WorkOrderScreen key={navigationReloadKey} accessRole={accessRole} user={user} initialOrderId={notificationOrderId} syncService={syncService} onLoadingChange={setIsPageRefreshing} />
         ) : activeScreen === "notifications" ? (
-          <NotificationsScreen notifications={inbox.notifications} loading={inbox.loading} error={inbox.error} onRefresh={() => void inbox.refresh()} onOpen={(notification) => {
+          <NotificationsScreen key={navigationReloadKey} notifications={inbox.notifications} loading={inbox.loading} error={inbox.error} onRefresh={() => inbox.refresh()} onLoadingChange={setIsPageRefreshing} onOpen={(notification) => {
             void inbox.markRead(notification.id);
             setNotificationOrderId(notification.scheduleId);
             setActiveScreen("work-orders");
           }} />
         ) : (
-          <ScrollView style={styles.profileScroll} contentContainerStyle={styles.profileContent}>
+          <ScrollView
+            key={navigationReloadKey}
+            style={styles.profileScroll}
+            contentContainerStyle={styles.profileContent}
+            refreshControl={
+              <RefreshControl
+                refreshing={profilePullRefreshing}
+                onRefresh={() => void refreshProfile(true)}
+                colors={["#1a1f6e", "#d4a93f"]}
+                tintColor="#1a1f6e"
+                progressBackgroundColor="#ffffff"
+              />
+            }
+          >
+            <MobilePageHeader title="Profile" subtitle="Manage your account information and security" />
             <View style={styles.profileTopCard}>
               <View style={styles.profileHeaderRow}>
                 <View style={styles.profileAvatar}>
@@ -635,6 +701,7 @@ export default function App() {
                   <FieldLabel required>First name</FieldLabel>
                   <TextInput
                     style={styles.textInput}
+                    editable={profileEditing}
                     value={profileForm.firstName}
                     onChangeText={(firstName) => {
                       setProfileForm((current) => ({ ...current, firstName }));
@@ -648,6 +715,7 @@ export default function App() {
                   <FieldLabel required>Last name</FieldLabel>
                   <TextInput
                     style={styles.textInput}
+                    editable={profileEditing}
                     value={profileForm.lastName}
                     onChangeText={(lastName) => {
                       setProfileForm((current) => ({ ...current, lastName }));
@@ -663,6 +731,7 @@ export default function App() {
                   <FieldLabel required>Email</FieldLabel>
                   <TextInput
                     style={styles.textInput}
+                    editable={profileEditing}
                     value={profileForm.email}
                     onChangeText={(email) => {
                       setProfileForm((current) => ({ ...current, email }));
@@ -675,7 +744,7 @@ export default function App() {
 
                 <View style={styles.formFieldHalf}>
                   <FieldLabel>Mobile number</FieldLabel>
-                  <PhoneNumberField value={profileForm.contact} onChange={(contact) => {
+                  <PhoneNumberField editable={profileEditing} value={profileForm.contact} onChange={(contact) => {
                     setProfileForm((current) => ({ ...current, contact }));
                     setProfileMessage(null);
                   }} />
@@ -694,32 +763,48 @@ export default function App() {
                 </Text>
               ) : null}
 
-              <View style={styles.actionRowRight}>
-                <TouchableOpacity
-                  style={styles.cancelButton}
-                  onPress={() => {
-                    const nameParts = user.name.trim().split(/\s+/);
-                    setProfileForm({
-                      firstName: nameParts[0] ?? "",
-                      lastName: nameParts.slice(1).join(" "),
-                      email: user.email,
-                      contact: user.contact ?? "",
-                    });
-                    setProfileMessage(null);
-                  }}
-                >
-                  <Text style={styles.cancelButtonText}>Cancel</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.primaryButton, profileSaving && styles.disabledButton]}
-                  onPress={() => void saveProfile()}
-                  disabled={profileSaving}
-                >
-                  <Text style={styles.primaryButtonText}>
-                    {profileSaving ? "Saving..." : "Save changes"}
-                  </Text>
-                </TouchableOpacity>
-              </View>
+              {profileEditing ? (
+                <View style={styles.actionRowRight}>
+                  <TouchableOpacity
+                    style={styles.cancelButton}
+                    onPress={() => {
+                      const nameParts = user.name.trim().split(/\s+/);
+                      setProfileForm({
+                        firstName: nameParts[0] ?? "",
+                        lastName: nameParts.slice(1).join(" "),
+                        email: user.email,
+                        contact: user.contact ?? "",
+                      });
+                      setProfileMessage(null);
+                      setProfileEditing(false);
+                    }}
+                    disabled={profileSaving}
+                  >
+                    <Text style={styles.cancelButtonText}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.primaryButton, profileSaving && styles.disabledButton]}
+                    onPress={() => void saveProfile()}
+                    disabled={profileSaving}
+                  >
+                    <Text style={styles.primaryButtonText}>
+                      {profileSaving ? "Saving..." : "Save changes"}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <View style={styles.actionRowRight}>
+                  <TouchableOpacity
+                    style={styles.primaryButton}
+                    onPress={() => {
+                      setProfileMessage(null);
+                      setProfileEditing(true);
+                    }}
+                  >
+                    <Text style={styles.primaryButtonText}>Edit</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
             </View>
 
             <View style={styles.settingsCard}>
@@ -773,7 +858,7 @@ export default function App() {
               {passwordMessage ? (
                 <Text
                   style={
-                    passwordMessage === "Password fields are ready to update."
+                    passwordMessage === "Password updated successfully."
                       ? styles.profileSuccess
                       : styles.profileError
                   }
@@ -782,71 +867,27 @@ export default function App() {
                 </Text>
               ) : null}
 
-              <View style={styles.actionRowRight}>
-                <TouchableOpacity
-                  style={styles.cancelButton}
-                  onPress={() => {
-                    setPasswordForm({ current: "", next: "", confirm: "" });
-                    setPasswordMessage(null);
-                  }}
-                >
-                  <Text style={styles.cancelButtonText}>Cancel</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.primaryButton} onPress={validatePasswordForm}>
-                  <Text style={styles.primaryButtonText}>Update</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-
-            <View style={styles.settingsCard}>
-              <Text style={styles.cardTitle}>Recent activity</Text>
-
-              <View style={styles.activityList}>
-                <View style={styles.activityRow}>
-                  <View style={styles.activityIconContainer}>
-                    <Text style={styles.activityArrow}>↗</Text>
-                  </View>
-                  <View style={styles.activityTextWrap}>
-                    <Text style={styles.activityTitle}>Login from Chrome on Windows</Text>
-                    <Text style={styles.activityDate}>May 12, 2026 · Quezon City, PH</Text>
-                  </View>
+              {hasPasswordInput ? (
+                <View style={styles.actionRowRight}>
+                  <TouchableOpacity
+                    style={styles.cancelButton}
+                    onPress={() => {
+                      setPasswordForm({ current: "", next: "", confirm: "" });
+                      setPasswordMessage(null);
+                    }}
+                    disabled={passwordSaving}
+                  >
+                    <Text style={styles.cancelButtonText}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.primaryButton, (!passwordFormComplete || passwordSaving) && styles.disabledButton]}
+                    onPress={() => void validatePasswordForm()}
+                    disabled={!passwordFormComplete || passwordSaving}
+                  >
+                    <Text style={styles.primaryButtonText}>{passwordSaving ? "Updating..." : "Update"}</Text>
+                  </TouchableOpacity>
                 </View>
-
-                <View style={styles.activityRow}>
-                  <View style={styles.activityIconContainer}>
-                    <Text style={styles.activityArrow}>↗</Text>
-                  </View>
-                  <View style={styles.activityTextWrap}>
-                    <Text style={styles.activityTitle}>Password updated</Text>
-                    <Text style={styles.activityDate}>May 12, 2026 · Quezon City, PH</Text>
-                  </View>
-                </View>
-
-                <View style={styles.activityRow}>
-                  <View style={styles.activityDot} />
-                  <View style={styles.activityTextWrap}>
-                    <Text style={styles.activityTitle}>Login from iPhone Safari</Text>
-                    <Text style={styles.activityDate}>May 10, 2026 · Quezon City, PH</Text>
-                  </View>
-                </View>
-              </View>
-            </View>
-
-            <View style={styles.dangerCard}>
-              <Text style={styles.cardTitle}>Account</Text>
-              <Text style={styles.deleteText}>
-                Deleting your account removes your access and sends a request for permanent removal of your records.
-              </Text>
-              {deleteRequestMessage ? (
-                <Text style={styles.profileSuccess}>{deleteRequestMessage}</Text>
               ) : null}
-              <TouchableOpacity
-                style={styles.deleteButton}
-                onPress={requestAccountDeletion}
-                activeOpacity={0.8}
-              >
-                <Text style={styles.deleteButtonText}>Request account deletion</Text>
-              </TouchableOpacity>
             </View>
 
             <TouchableOpacity
@@ -1095,6 +1136,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#ffffff",
     borderRadius: 8,
     padding: 16,
+    marginTop: 12,
     marginBottom: 12,
     shadowColor: "#0f172a",
     shadowOpacity: 0.04,
@@ -1270,79 +1312,6 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     fontSize: 15,
   },
-  activityList: {
-    gap: 0,
-  },
-  activityRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    borderBottomWidth: 1,
-    borderBottomColor: "#e2e8f0",
-    paddingVertical: 10,
-    gap: 10,
-  },
-  activityIconContainer: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    backgroundColor: "#eef2ff",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  activityArrow: {
-    fontSize: 18,
-    color: "#1a1f6e",
-    fontWeight: "700",
-  },
-  activityDot: {
-    width: 14,
-    height: 14,
-    borderRadius: 7,
-    backgroundColor: "#1a1f6e",
-    marginLeft: 9,
-    marginRight: 9,
-  },
-  activityTextWrap: {
-    flex: 1,
-  },
-  activityTitle: {
-    fontSize: 15,
-    fontWeight: "700",
-    color: "#0f172a",
-  },
-  activityDate: {
-    fontSize: 12,
-    color: "#64748b",
-    marginTop: 4,
-  },
-  dangerCard: {
-    backgroundColor: "#fff7f7",
-    borderRadius: 8,
-    padding: 16,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: "#fecaca",
-  },
-  deleteText: {
-    color: "#475569",
-    fontSize: 15,
-    lineHeight: 22,
-    marginBottom: 14,
-  },
-  deleteButton: {
-    minHeight: 44,
-    borderRadius: 6,
-    paddingVertical: 10,
-    backgroundColor: "#ffffff",
-    borderWidth: 1,
-    borderColor: "#ef4444",
-    alignItems: "center",
-  },
-  deleteButtonText: {
-    color: "#ef4444",
-    fontWeight: "800",
-    fontSize: 14,
-  },
   logoutButton: {
     backgroundColor: "#d62828",
     minHeight: 48,
@@ -1377,6 +1346,17 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
     shadowOffset: { width: 0, height: -1 },
     elevation: 2,
+  },
+  navbarRefreshTrack: {
+    height: 3,
+    overflow: "hidden",
+    backgroundColor: "rgba(212, 169, 63, 0.18)",
+  },
+  navbarRefreshSegment: {
+    width: 96,
+    height: 3,
+    borderRadius: 2,
+    backgroundColor: "#d4a93f",
   },
   tabButton: {
     flex: 1,

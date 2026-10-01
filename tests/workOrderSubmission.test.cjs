@@ -1,10 +1,20 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const {
+  getChangedExecutionItems,
   getChangedPartsSubmissionError,
   getChecklistSubmissionError,
+  mergeUploadedAttachments,
+  normalizePartDetailEntries,
   normalizePartDetails,
 } = require('../screens/workOrderSubmission.ts');
+const { getPersistedWorkOrderNumber } = require('../screens/workOrderId.ts');
+
+test('displays the persisted work order number without deriving it from the schedule ID', () => {
+  const number = 'WO-20261001-000042';
+  assert.equal(getPersistedWorkOrderNumber(number), number);
+  assert.equal(getPersistedWorkOrderNumber(null), 'N/A');
+});
 
 test('normalizes absent or invalid parts data to an empty map', () => {
   assert.deepEqual(normalizePartDetails(undefined), {});
@@ -13,6 +23,55 @@ test('normalizes absent or invalid parts data to an empty map', () => {
   assert.deepEqual(normalizePartDetails({ oil: { partsUsed: 'Filter' } }), {
     oil: { partsUsed: 'Filter' },
   });
+});
+
+test('normalizes legacy part entries without attachments before the screen renders', () => {
+  assert.deepEqual(normalizePartDetailEntries({
+    oil: { partsUsed: 'Oil filter', quantity: '1', materialCost: '250' },
+    invalid: null,
+  }), {
+    oil: {
+      partsUsed: 'Oil filter',
+      quantity: '1',
+      materialCost: '250',
+      attachments: [],
+      attachmentName: '',
+    },
+    invalid: {
+      partsUsed: '',
+      quantity: '',
+      materialCost: '',
+      attachments: [],
+      attachmentName: '',
+    },
+  });
+});
+
+test('parts details are limited to checklist items marked Changed', () => {
+  const items = [
+    { id: 'oil', status: 'checked' },
+    { id: 'brakes', status: 'changed' },
+    { id: 'tires', status: 'notChecked' },
+  ];
+  assert.deepEqual(getChangedExecutionItems(items), [items[1]]);
+  assert.deepEqual(getChangedExecutionItems(items.filter((item) => item.status !== 'changed')), []);
+});
+
+test('normalizes stored attachment metadata required for protected viewing', () => {
+  assert.deepEqual(normalizePartDetailEntries({ brakes: {
+    attachments: [{ id: 'file-id', name: 'brakes.pdf', sizeMb: 0.8, contentType: 'application/pdf', storageName: 'file-id.pdf' }],
+  } }).brakes.attachments, [{
+    id: 'file-id', name: 'brakes.pdf', sizeMb: 0.8, contentType: 'application/pdf', storageName: 'file-id.pdf',
+  }]);
+});
+
+test('re-uploading a legacy filename replaces the non-viewable placeholder', () => {
+  const merged = mergeUploadedAttachments([
+    { id: 'legacy', name: '1000013845.jpg', sizeMb: 0 },
+    { id: 'other', name: 'other.jpg', sizeMb: 0 },
+  ], { id: 'stored', name: '1000013845.jpg', sizeMb: 1, storageName: 'stored.jpg' });
+  assert.deepEqual(merged.map(({ name }) => name), ['other.jpg', '1000013845.jpg']);
+  assert.equal(merged[1].storageName, 'stored.jpg');
 });
 
 test('lists every unfinished item, including Not Checked', () => {

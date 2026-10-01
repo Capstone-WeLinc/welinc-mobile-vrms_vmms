@@ -51,6 +51,7 @@ interface ServerVehicle {
 
 interface ServerMaintenanceSchedule {
   id: string;
+  workOrderNumber?: string | null;
   vehicleId?: string;
   vehicleID?: string;
   title: string;
@@ -400,6 +401,8 @@ function mapMaintenanceSchedule(
 
   return {
     id: requireText(getValue(scheduleRecord, ["id"]), "maintenanceSchedule.id"),
+    workOrderNumber:
+      extractStringValue(scheduleRecord, ["workOrderNumber", "work_order_number"]) ?? "",
     vehicleId: requireText(
       extractStringValue(scheduleRecord, [
         "vehicleId",

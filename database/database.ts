@@ -98,6 +98,10 @@ export async function createTables(
       await migrateToV5(db);
     }
 
+    // The v5 table rebuild predates the persisted work order number column.
+    // Ensure it after all rebuilds so older installations retain the upgrade.
+    await ensureMaintenanceSchedulesSchema(db);
+
     if (currentVersion < DATABASE_VERSION) {
       await db.execAsync(`PRAGMA user_version = ${DATABASE_VERSION}`);
     }
@@ -118,6 +122,7 @@ async function hasMissingRequiredColumns(
       tableName: "vehicles",
       requiredColumns: [
         "id",
+        "workOrderNumber",
         "plateNumber",
         "model",
         "capacity",
@@ -366,6 +371,7 @@ async function ensureMaintenanceSchedulesSchema(
     await db.execAsync(`
       CREATE TABLE IF NOT EXISTS maintenance_schedules (
         id TEXT PRIMARY KEY NOT NULL,
+        workOrderNumber TEXT NOT NULL DEFAULT '',
         vehicleId TEXT NOT NULL,
         title TEXT NOT NULL,
         garageId TEXT,
@@ -393,6 +399,7 @@ async function ensureMaintenanceSchedulesSchema(
   }
 
   const columns = await getTableColumns(db, "maintenance_schedules");
+  await addColumnIfMissing(db, "maintenance_schedules", "workOrderNumber", "TEXT NOT NULL DEFAULT ''");
   if (!columns.includes("vehicleId") && columns.includes("vehicleID")) {
     await db.execAsync(
       "ALTER TABLE maintenance_schedules ADD COLUMN vehicleId TEXT",

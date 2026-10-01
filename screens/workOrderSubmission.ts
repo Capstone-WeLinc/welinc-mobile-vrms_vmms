@@ -5,6 +5,61 @@ export function normalizePartDetails<T>(value: unknown): Record<string, T> {
   return value as Record<string, T>;
 }
 
+export function getChangedExecutionItems<T extends { status: string }>(
+  items: ReadonlyArray<T>,
+): T[] {
+  return items.filter((item) => item.status === "changed");
+}
+
+export function mergeUploadedAttachments<T extends { name: string; storageName?: string }>(
+  existing: ReadonlyArray<T>,
+  uploaded: T,
+): T[] {
+  return [
+    ...existing.filter((file) => file.storageName || file.name.toLowerCase() !== uploaded.name.toLowerCase()),
+    uploaded,
+  ];
+}
+
+export interface PartDetailEntry {
+  partsUsed: string;
+  quantity: string;
+  materialCost: string;
+  attachments: Array<{ id: string; name: string; sizeMb: number; contentType?: string; storageName?: string }>;
+  attachmentName: string;
+}
+
+const asText = (value: unknown): string =>
+  typeof value === "string" || typeof value === "number" ? String(value) : "";
+
+export function normalizePartDetailEntries(value: unknown): Record<string, PartDetailEntry> {
+  const entries = normalizePartDetails<Record<string, unknown>>(value);
+  return Object.fromEntries(Object.entries(entries).map(([key, raw]) => {
+    const entry = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+    const attachments = Array.isArray(entry.attachments)
+      ? entry.attachments.flatMap((attachment, index) => {
+          if (!attachment || typeof attachment !== "object" || Array.isArray(attachment)) return [];
+          const item = attachment as Record<string, unknown>;
+          const size = Number(item.sizeMb);
+          return [{
+            id: asText(item.id) || `${key}-attachment-${index}`,
+            name: asText(item.name),
+            sizeMb: Number.isFinite(size) && size >= 0 ? size : 0,
+            ...(typeof item.contentType === "string" ? { contentType: item.contentType } : {}),
+            ...(typeof item.storageName === "string" ? { storageName: item.storageName } : {}),
+          }];
+        })
+      : [];
+    return [key, {
+      partsUsed: asText(entry.partsUsed),
+      quantity: asText(entry.quantity),
+      materialCost: asText(entry.materialCost),
+      attachments,
+      attachmentName: asText(entry.attachmentName),
+    }];
+  }));
+}
+
 export function getChecklistSubmissionError(
   items: ReadonlyArray<{ label: string; status: string }>,
 ): string | null {

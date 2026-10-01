@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-  ActivityIndicator,
   FlatList,
   Pressable,
   RefreshControl,
@@ -13,21 +12,24 @@ import { getMaintenanceSchedules, getVehicles } from "../database/database";
 import type { MaintenanceSchedule, Vehicle } from "../database/tables";
 import { getMobileAccessRole, type AuthenticatedUser } from "../services/AuthService";
 import { SyncService, type SyncResult } from "../services/SyncService";
+import { MobilePageHeader } from "../components/MobilePageHeader";
 
 interface DashboardScreenProps {
   user: AuthenticatedUser;
   syncService: SyncService;
   onLogout: () => Promise<void>;
+  onLoadingChange?: (loading: boolean) => void;
 }
 
 export function DashboardScreen({
   user,
   syncService,
   onLogout,
+  onLoadingChange,
 }: DashboardScreenProps) {
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [schedules, setSchedules] = useState<MaintenanceSchedule[]>([]);
-  const [refreshing, setRefreshing] = useState(false);
+  const [pullRefreshing, setPullRefreshing] = useState(false);
   const [lastSync, setLastSync] = useState<string | null>(null);
   const [syncState, setSyncState] = useState<
     "starting" | "online" | "offline" | "error"
@@ -53,8 +55,9 @@ export function DashboardScreen({
     [loadCache],
   );
 
-  const synchronize = useCallback(async () => {
-    setRefreshing(true);
+  const synchronize = useCallback(async (fromPullToRefresh = false) => {
+    onLoadingChange?.(true);
+    if (fromPullToRefresh) setPullRefreshing(true);
     try {
       await applySyncResult(await syncService.sync());
     } catch (syncError) {
@@ -66,20 +69,19 @@ export function DashboardScreen({
       );
       await loadCache();
     } finally {
-      setRefreshing(false);
+      onLoadingChange?.(false);
+      setPullRefreshing(false);
     }
-  }, [applySyncResult, loadCache, syncService]);
+  }, [applySyncResult, loadCache, onLoadingChange, syncService]);
 
   useEffect(() => {
     void loadCache();
     const unsubscribeSync = syncService.subscribe(
       (result) => void applySyncResult(result),
     );
-    const stopAutoSync = syncService.startAutoSync();
     void synchronize();
     return () => {
       unsubscribeSync();
-      stopAutoSync();
     };
   }, [applySyncResult, loadCache, syncService, synchronize]);
 
@@ -90,31 +92,25 @@ export function DashboardScreen({
       keyExtractor={(vehicle) => vehicle.id}
       ListEmptyComponent={
         syncState === "starting" ? (
-          <ActivityIndicator />
+          <Text style={styles.empty}>Loading vehicle data…</Text>
         ) : (
           <Text style={styles.empty}>No cached vehicles.</Text>
         )
       }
       ListHeaderComponent={
         <View style={styles.header}>
-          <View style={styles.titleRow}>
-            <View>
-              <Text style={styles.title}>Vehicle Maintenance</Text>
-              <Text style={styles.subtitle}>Signed in as {user.name}</Text>
-            </View>
-            <Pressable onPress={() => void onLogout()}></Pressable>
-          </View>
+          <MobilePageHeader title="Vehicle Maintenance" subtitle={`Signed in as ${user.name}`} />
 
           <View
             style={[styles.status, syncState === "error" && styles.statusError]}
           >
             <Text style={styles.statusText}>
               {syncState === "online"
-                ? "Online — synchronized"
+                ? "Online"
                 : syncState === "offline"
-                  ? "Offline — showing SQLite cache"
+                  ? "Offline"
                   : syncState === "error"
-                    ? "Sync failed — showing last good cache"
+                    ? "Sync failed"
                     : "Checking connection…"}
             </Text>
             {lastSync ? (
@@ -129,13 +125,16 @@ export function DashboardScreen({
             <Metric label="Vehicles" value={vehicles.length} />
             <Metric label="Schedules" value={schedules.length} />
           </View>
-          <Text style={styles.sectionTitle}>Cached vehicles</Text>
+          <Text style={styles.sectionTitle}>Vehicles</Text>
         </View>
       }
       refreshControl={
         <RefreshControl
-          refreshing={refreshing}
-          onRefresh={() => void synchronize()}
+          refreshing={pullRefreshing}
+          onRefresh={() => void synchronize(true)}
+          colors={["#1a1f6e", "#d4a93f"]}
+          tintColor="#1a1f6e"
+          progressBackgroundColor="#ffffff"
         />
       }
       renderItem={({ item }) => (

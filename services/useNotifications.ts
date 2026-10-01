@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AppState } from "react-native";
 import { getNotifications, markNotificationRead, type MaintenanceNotification } from "./NotificationService";
 
 export function useNotifications(userId: string | undefined) {
@@ -31,9 +30,6 @@ export function useNotifications(userId: string | undefined) {
     setLoading(false);
     if (!userId) return;
     void refresh();
-    const timer = setInterval(() => { if (AppState.currentState === "active") void refresh(); }, 30000);
-    const subscription = AppState.addEventListener("change", (state) => { if (state === "active") void refresh(); });
-    return () => { clearInterval(timer); subscription.remove(); };
   }, [userId, refresh]);
   const markRead = async (id: string) => {
     try {

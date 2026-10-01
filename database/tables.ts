@@ -1,5 +1,5 @@
 export const DATABASE_NAME = "vmms_mobile.db";
-export const DATABASE_VERSION = 6;
+export const DATABASE_VERSION = 7;
 
 // Enums matching Prisma schema
 export enum VehicleStatus {
@@ -53,6 +53,7 @@ export interface Vehicle {
 
 export interface MaintenanceSchedule {
   id: string;
+  workOrderNumber: string;
   vehicleId: string;
   title: string;
   garageId: string | null;
@@ -112,6 +113,7 @@ export const CREATE_TABLES_SQL = `
 
   CREATE TABLE IF NOT EXISTS maintenance_schedules (
     id TEXT PRIMARY KEY NOT NULL,
+    workOrderNumber TEXT NOT NULL DEFAULT '',
     vehicleId TEXT NOT NULL,
     title TEXT NOT NULL,
     garageId TEXT,
