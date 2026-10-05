@@ -9,6 +9,7 @@ import {
 } from "./workOrderSubmission";
 import { isWorkOrderStartDateReached } from "./workOrderStartDate";
 import { getPersistedWorkOrderNumber } from "./workOrderId";
+import { isAwaitingChiefReview, submittedReviewState } from "./workOrderReview";
 import { formatWorkOrderDate as formatReadableDate } from "../services/workOrderDates";
 import { MobilePageHeader } from "../components/MobilePageHeader";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -90,6 +91,7 @@ type WorkOrder = {
   assignedMechanicId: string | null;
   chiefMechanicId: string | null;
   dateCreated: string;
+  createdAtTimestamp: number;
   startDate: string | null;
   status: WorkOrderStatus;
   summary: string;
@@ -100,8 +102,10 @@ type WorkOrder = {
   executionItems: ExecutionItem[];
   partDetails: Record<string, PartDetailEntry>;
   inspectionItems: InspectionItem[];
+  maintenanceRemarks: string;
   chiefMechanic: string;
   inspectorRemarks: string;
+  rejectionRemarks: string;
   inspectionResultsPending: number;
   approvalStatus: InspectionRemark;
   mechanicSubmitted: boolean;
@@ -114,8 +118,10 @@ type PersistedWorkOrderProgress = Omit<
     | "executionItems"
     | "partDetails"
     | "inspectionItems"
+    | "maintenanceRemarks"
     | "chiefMechanic"
     | "inspectorRemarks"
+    | "rejectionRemarks"
     | "approvalStatus"
   >,
   "approvalStatus"
@@ -141,6 +147,10 @@ const parseWorkOrderProgress = (
       inspectionItems: Array.isArray(parsed.inspectionItems)
         ? parsed.inspectionItems
         : [],
+      maintenanceRemarks:
+        typeof parsed.maintenanceRemarks === "string"
+          ? parsed.maintenanceRemarks
+          : "",
       chiefMechanic:
         typeof parsed.chiefMechanic === "string" ? parsed.chiefMechanic : "",
       inspectorRemarks:
@@ -160,6 +170,12 @@ const parseWorkOrderProgress = (
               ? "Unverified"
               : parsed.approvalStatus
           : "Unverified",
+      rejectionRemarks:
+        typeof parsed.rejectionRemarks === "string"
+          ? parsed.rejectionRemarks
+          : parsed.workflowStatus === "Rejected" && typeof parsed.inspectorRemarks === "string"
+            ? parsed.inspectorRemarks
+            : "",
       mechanicSubmitted: parsed.mechanicSubmitted === true,
       status: parsed.workflowStatus,
     };
@@ -442,6 +458,11 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
   const [pullRefreshing, setPullRefreshing] = useState(false);
   const [reloadVersion, setReloadVersion] = useState(0);
   const [searchQuery, setSearchQuery] = useState("");
+  const [showFilters, setShowFilters] = useState(false);
+  const [openFilterMenu, setOpenFilterMenu] = useState<"status" | "type" | null>(null);
+  const [statusFilter, setStatusFilter] = useState<string | null>(null);
+  const [typeFilter, setTypeFilter] = useState<string | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [activeStep, setActiveStep] = useState<StepKey>("details");
   const [previewAttachmentUri, setPreviewAttachmentUri] = useState<string | null>(null);
@@ -474,7 +495,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
     async function loadWorkOrders(): Promise<void> {
       setIsLoading(true);
       try {
-        if (initialOrderId && syncService && reloadVersion === 0) {
+        if (syncService && reloadVersion === 0) {
           await syncService.sync();
         }
         if (!mounted) return;
@@ -532,6 +553,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
               assignedMechanicId: schedule.assignedMechanicId,
               chiefMechanicId: schedule.chiefMechanicId,
               dateCreated: formatReadableDate(schedule.createdAt),
+              createdAtTimestamp: Date.parse(schedule.createdAt) || 0,
               startDate: schedule.startDate,
               status:
                 savedProgress.status ??
@@ -624,8 +646,10 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
                 ...normalizePartDetailEntries(savedProgress.partDetails),
               },
               inspectionItems: savedInspectionItems,
+              maintenanceRemarks: savedProgress.maintenanceRemarks ?? "",
               chiefMechanic: savedProgress.chiefMechanic ?? "",
               inspectorRemarks: savedProgress.inspectorRemarks ?? "",
+              rejectionRemarks: savedProgress.rejectionRemarks ?? "",
               inspectionResultsPending: 0,
               approvalStatus:
                 savedProgress.approvalStatus === "For Repair"
@@ -637,6 +661,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
                 savedProgress.mechanicSubmitted ??
                 savedProgress.status === "For Verification",
               workOrderProgress: schedule.workOrderProgress,
+              ...submittedReviewState(schedule.status),
             };
           }),
         );
@@ -646,12 +671,12 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
         if (initialOrderId) {
           const target = converted.find((order) => order.id === initialOrderId &&
             (accessRole === "mechanic" ? order.assignedMechanicId === user.id :
-              accessRole === "chiefMechanic" && order.chiefMechanicId === user.id));
+              accessRole === "chiefMechanic" && isAwaitingChiefReview(order, user.id)));
           if (target) {
             setSelectedOrderId(target.id);
             setActiveStep("details");
           } else {
-            Alert.alert("Work order unavailable", "This work order may have been removed or reassigned. Refresh your work orders and try again.");
+            Alert.alert("Work order unavailable", "This work order may have been removed, reassigned, or is not awaiting your review. Refresh your work orders and try again.");
           }
         }
       } catch (error) {
@@ -671,6 +696,18 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
       mounted = false;
     };
   }, [initialOrderId, syncService, accessRole, user.id, reloadVersion]);
+
+  useEffect(() => {
+    if (accessRole !== "chiefMechanic" || !syncService) return;
+    const unsubscribe = syncService.subscribe(() => {
+      if (!selectedOrderId) setReloadVersion((version) => version + 1);
+    });
+    const timer = setInterval(() => {
+      if (!selectedOrderId) void syncService.sync().catch((error) =>
+        console.warn("[WorkOrderScreen] Review queue refresh failed", error));
+    }, 30000);
+    return () => { unsubscribe(); clearInterval(timer); };
+  }, [accessRole, syncService, selectedOrderId]);
 
   useEffect(() => {
     if (!selectedOrderId) {
@@ -801,7 +838,6 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
   }, [selectedOrderId]);
 
   const currentUserName = user.name.trim().toLowerCase();
-  const currentUserDisplayName = user.name.trim();
 
   const persistWorkOrder = (order: WorkOrder, _status?: string, action = "SAVE") => {
     const partDetails = normalizePartDetailEntries(order.partDetails);
@@ -813,7 +849,8 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
     const progress = {
       executionItems: Array.isArray(order.executionItems) ? order.executionItems : [], partDetails,
       inspectionItems: Array.isArray(order.inspectionItems) ? order.inspectionItems : [], chiefMechanic: order.chiefMechanic,
-      inspectorRemarks: order.inspectorRemarks, approvalStatus: order.approvalStatus,
+      maintenanceRemarks: order.maintenanceRemarks, inspectorRemarks: order.inspectorRemarks,
+      rejectionRemarks: order.rejectionRemarks, approvalStatus: order.approvalStatus,
       mechanicSubmitted: order.mechanicSubmitted, workflowStatus: order.status, action,
       partsCost,
     };
@@ -964,8 +1001,15 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
     );
   };
 
-  const filteredOrders = workOrders.filter((order) => {
-    const query = searchQuery.toLowerCase();
+  const visibleOrders = workOrders.filter((order) => accessRole === "mechanic"
+    ? order.assignedMechanicId === user.id
+    : accessRole === "chiefMechanic" && isAwaitingChiefReview(order, user.id));
+  const statusOptions = [...new Set(visibleOrders.map((order) => order.status))].sort();
+  const typeOptions = [...new Set(visibleOrders.map((order) => order.maintenanceType))].sort();
+  const filtersActive = Boolean(searchQuery.trim() || statusFilter || typeFilter);
+  const clearFilters = () => { setSearchQuery(""); setStatusFilter(null); setTypeFilter(null); };
+  const filteredOrders = visibleOrders.filter((order) => {
+    const query = searchQuery.trim().toLowerCase();
     const matchesQuery =
       order.number.toLowerCase().includes(query) ||
       order.plate.toLowerCase().includes(query) ||
@@ -973,38 +1017,24 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
       order.mechanic.toLowerCase().includes(query) ||
       order.chiefMechanic.toLowerCase().includes(query);
 
-    if (accessRole === "mechanic") {
-      return matchesQuery && order.assignedMechanicId === user.id;
-    }
-
-    if (accessRole === "chiefMechanic") {
-      return (
-        matchesQuery &&
-        (order.mechanicSubmitted ||
-          order.status === "Pending" ||
-          order.status === "For Verification" ||
-          order.status === "Done" ||
-          order.status === "Rejected" ||
-          order.status === "For Repair") &&
-        order.chiefMechanicId === user.id
-      );
-    }
-
-    return matchesQuery;
-  });
-
-  const groupedOrders = filteredOrders.reduce<Record<string, WorkOrder[]>>(
-    (groups, order) => {
-      const mechanicKey = order.mechanic.trim() || "Unassigned";
-      groups[mechanicKey] = [...(groups[mechanicKey] ?? []), order];
-      return groups;
-    },
-    {},
+    return matchesQuery && (!statusFilter || order.status === statusFilter) &&
+      (!typeFilter || order.maintenanceType === typeFilter);
+  }).sort((left, right) =>
+    right.createdAtTimestamp - left.createdAtTimestamp ||
+    right.number.localeCompare(left.number, undefined, { numeric: true }),
   );
 
-  const groupedOrderEntries = Object.entries(groupedOrders).sort(
-    ([leftName], [rightName]) => leftName.localeCompare(rightName),
-  );
+  const ordersPerPage = 10;
+  const totalPages = Math.max(1, Math.ceil(filteredOrders.length / ordersPerPage));
+  const pageOrders = filteredOrders.slice((currentPage - 1) * ordersPerPage, currentPage * ordersPerPage);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchQuery, statusFilter, typeFilter, accessRole, user.id]);
+
+  useEffect(() => {
+    if (currentPage > totalPages) setCurrentPage(totalPages);
+  }, [currentPage, totalPages]);
 
   const updateExecutionStatus = (
     orderId: string,
@@ -1069,6 +1099,13 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
     updateWorkOrder(orderId, (order) => ({
       ...order,
       inspectorRemarks: remarks,
+    }));
+  };
+
+  const updateMaintenanceRemarks = (orderId: string, remarks: string) => {
+    updateWorkOrder(orderId, (order) => ({
+      ...order,
+      maintenanceRemarks: remarks,
     }));
   };
 
@@ -1147,8 +1184,10 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
         executionItems: updatedOrder.executionItems,
         partDetails,
         inspectionItems: updatedOrder.inspectionItems,
+        maintenanceRemarks: updatedOrder.maintenanceRemarks,
         chiefMechanic: updatedOrder.chiefMechanic,
         inspectorRemarks: updatedOrder.inspectorRemarks,
+        rejectionRemarks: updatedOrder.rejectionRemarks,
         approvalStatus: updatedOrder.approvalStatus,
         mechanicSubmitted: updatedOrder.mechanicSubmitted,
         workflowStatus: updatedOrder.status,
@@ -1398,6 +1437,10 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
     if (!selectedOrder || !isChiefMechanicRole) return;
     const remark = getAutomaticInspectionRemark(selectedOrder.inspectionItems);
     if (remark === "Unverified") return;
+    if (remark === "Rejected" && !selectedOrder.inspectorRemarks.trim()) {
+      Alert.alert("Rejection remarks required", "Add remarks explaining the work that needs correction before returning it to the mechanic.");
+      return;
+    }
     void performWorkflowAction(remark === "Verified" ? "APPROVE" : remark === "Rejected" ? "REJECT" : "REPAIR");
   };
 
@@ -1811,6 +1854,19 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
                   ))}
                 </View>
 
+                {isMechanicRole && selectedOrder.rejectionRemarks.trim() ? (
+                  <View style={[styles.remarksSection, { backgroundColor: "#fff7ed", paddingHorizontal: 12, borderRadius: 10 }]}>
+                    <Text style={[styles.remarksLabel, { color: "#9a3412" }]}>Chief Mechanic Rejection Remarks</Text>
+                    <Text style={styles.sectionText}>{selectedOrder.rejectionRemarks}</Text>
+                  </View>
+                ) : null}
+                {selectedOrder.maintenanceRemarks.trim() ? (
+                  <View style={styles.remarksSection}>
+                    <Text style={styles.remarksLabel}>Mechanic Maintenance Remarks</Text>
+                    <Text style={styles.sectionText}>{selectedOrder.maintenanceRemarks}</Text>
+                  </View>
+                ) : null}
+
                 {/* Parts Used Section */}
                 <View style={styles.partsSection}>
                   <Text style={styles.sectionTitle}>
@@ -1956,6 +2012,20 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
                   );
                 })
               )}
+
+              <View style={styles.remarksSection}>
+                <Text style={styles.remarksLabel}>Maintenance Work Remarks</Text>
+                <Text style={styles.sectionText}>Describe the maintenance work performed and any additional information about this activity.</Text>
+                <TextInput
+                  style={styles.remarksInput}
+                  editable={!mechanicOrderLocked}
+                  placeholder="Describe the work performed"
+                  placeholderTextColor="#94a3b8"
+                  multiline
+                  value={selectedOrder.maintenanceRemarks}
+                  onChangeText={(text) => updateMaintenanceRemarks(selectedOrder.id, text)}
+                />
+              </View>
 
             </View>
           )}
@@ -2182,6 +2252,12 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
                     updateInspectorRemarks(selectedOrder.id, text)
                   }
                 />
+                {selectedOrder.rejectionRemarks.trim() ? (
+                  <View style={styles.remarksSection}>
+                    <Text style={styles.remarksLabel}>Previous Rejection Remarks</Text>
+                    <Text style={styles.sectionText}>{selectedOrder.rejectionRemarks}</Text>
+                  </View>
+                ) : null}
               </View>
             </View>
           )}
@@ -2287,15 +2363,73 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
           style={styles.searchInput}
           value={searchQuery}
           onChangeText={setSearchQuery}
+          accessibilityLabel="Search work orders by number, plate, task, or mechanic"
+          autoCapitalize="none"
           placeholder="Search vehicle, task, or mechanic…"
           placeholderTextColor="#94a3b8"
         />
-        <TouchableOpacity style={styles.filterButton}>
-          <Svg width={18} height={18} viewBox="0 0 24 24" fill="none">
-            <Circle cx="11" cy="11" r="5.5" stroke="#D4A93F" strokeWidth={2} />
-            <Path d="M16 16L21 21" stroke="#D4A93F" strokeWidth={2} strokeLinecap="round" />
+        <TouchableOpacity style={styles.filterButton} onPress={() => setShowFilters((value) => !value)}
+          accessibilityRole="button" accessibilityLabel="Toggle work order filters" accessibilityState={{ expanded: showFilters }}>
+          <Svg width={26} height={26} viewBox="0 0 24 24" fill="none" accessibilityLabel="Filter">
+            <Path
+              d="M3 4h18l-7 8.2v6.2l-4 2V12.2L3 4Z"
+              stroke="#D4A93F"
+              strokeWidth={2.3}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
           </Svg>
+          {statusFilter || typeFilter ? <View style={styles.activeFilterDot} /> : null}
         </TouchableOpacity>
+      </View>
+
+      {showFilters && (
+        <View style={styles.filterPanel}>
+          {[
+            { key: "status" as const, label: "Status", options: statusOptions, selected: statusFilter, select: setStatusFilter },
+            { key: "type" as const, label: "Maintenance Type", options: typeOptions, selected: typeFilter, select: setTypeFilter },
+          ].map((filter) => (
+            <View key={filter.key} style={styles.filterMenuSection}>
+              <View style={styles.filterMenuHeader}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.remarksLabel}>{filter.label}</Text>
+                  <Text style={styles.filterSelectedValue}>{filter.selected ?? "All"}</Text>
+                </View>
+                <TouchableOpacity
+                  onPress={() => setOpenFilterMenu((current) => current === filter.key ? null : filter.key)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Choose ${filter.label.toLowerCase()}`}
+                  accessibilityState={{ expanded: openFilterMenu === filter.key }}
+                  style={styles.filterMenuButton}
+                >
+                  <Text style={styles.filterMenuButtonText}>•••</Text>
+                </TouchableOpacity>
+              </View>
+              {openFilterMenu === filter.key && (
+                <View style={styles.filterOptionsMenu}>
+                  {[null, ...filter.options].map((option) => (
+                    <TouchableOpacity
+                      key={option ?? "all"}
+                      onPress={() => { filter.select(option); setOpenFilterMenu(null); }}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected: filter.selected === option }}
+                      style={styles.filterOption}
+                    >
+                      <Text style={[styles.filterOptionText, filter.selected === option && styles.filterOptionTextSelected]}>
+                        {option ?? "All"}
+                      </Text>
+                      {filter.selected === option ? <Text style={styles.filterOptionCheck}>✓</Text> : null}
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              )}
+            </View>
+          ))}
+        </View>
+      )}
+      <View style={styles.searchRow}>
+        <Text style={styles.sectionText}>{filteredOrders.length} of {visibleOrders.length} work orders</Text>
+        {filtersActive && <TouchableOpacity onPress={clearFilters} accessibilityRole="button"><Text style={{ color: "#1a1f6e", fontWeight: "700" }}>Clear filters</Text></TouchableOpacity>}
       </View>
 
       <ScrollView
@@ -2306,33 +2440,17 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
           <View style={styles.emptyStateCard}>
             <Text style={styles.emptyStateTitle}>Loading work orders…</Text>
           </View>
-        ) : groupedOrderEntries.length === 0 ? (
+        ) : filteredOrders.length === 0 ? (
           <View style={styles.emptyStateCard}>
-            <Text style={styles.emptyStateTitle}>No assigned work orders</Text>
+            <Text style={styles.emptyStateTitle}>{filtersActive ? "No matching work orders" : "No assigned work orders"}</Text>
             <Text style={styles.emptyStateText}>
-              {accessRole === "mechanic"
+              {filtersActive ? "Try a different search or clear the filters." : accessRole === "mechanic"
                 ? "No execution work orders are assigned to you right now."
                 : "No inspection work orders are assigned to you right now."}
             </Text>
           </View>
         ) : (
-          groupedOrderEntries.map(([mechanicName, orders]) => (
-            <View key={mechanicName} style={styles.groupSection}>
-              <View style={styles.groupHeader}>
-                <Text style={styles.groupLabel}>Assigned Mechanic</Text>
-                <Text style={styles.groupMechanicName}>
-                  {accessRole === "mechanic"
-                    ? currentUserDisplayName
-                    : mechanicName}
-                </Text>
-                <Text style={styles.groupCount}>
-                  {orders.length === 1
-                    ? "1 work order"
-                    : `${orders.length} work orders`}
-                </Text>
-              </View>
-
-              {orders.map((order) => (
+          pageOrders.map((order) => (
                 <Pressable
                   key={order.id}
                   style={styles.orderCard}
@@ -2366,16 +2484,48 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
                     <Text style={styles.cardArrow}>›</Text>
                   </View>
                 </Pressable>
-              ))}
-            </View>
           ))
         )}
+        {!isLoading && filteredOrders.length > 0 && totalPages > 1 ? (
+          <View style={styles.pagination}>
+            <TouchableOpacity
+              style={[styles.pageButton, currentPage === 1 && styles.pageButtonDisabled]}
+              disabled={currentPage === 1}
+              onPress={() => setCurrentPage((page) => Math.max(1, page - 1))}
+              accessibilityRole="button"
+              accessibilityLabel="Previous page"
+            >
+              <Text style={styles.pageButtonText}>Previous</Text>
+            </TouchableOpacity>
+            <Text style={styles.pageIndicator}>Page {currentPage} of {totalPages}</Text>
+            <TouchableOpacity
+              style={[styles.pageButton, currentPage === totalPages && styles.pageButtonDisabled]}
+              disabled={currentPage === totalPages}
+              onPress={() => setCurrentPage((page) => Math.min(totalPages, page + 1))}
+              accessibilityRole="button"
+              accessibilityLabel="Next page"
+            >
+              <Text style={styles.pageButtonText}>Next</Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
       </ScrollView>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
+  filterPanel: { padding: 12, backgroundColor: "#ffffff", borderRadius: 12, marginBottom: 12 },
+  filterMenuSection: { marginBottom: 8 },
+  filterMenuHeader: { flexDirection: "row", alignItems: "center", gap: 12 },
+  filterSelectedValue: { color: "#1a1f6e", fontSize: 14, fontWeight: "600", marginTop: 3 },
+  filterMenuButton: { minWidth: 44, minHeight: 44, borderRadius: 10, alignItems: "center", justifyContent: "center", backgroundColor: "#f1f5f9" },
+  filterMenuButtonText: { color: "#1a1f6e", fontSize: 18, fontWeight: "800", letterSpacing: 1 },
+  filterOptionsMenu: { marginTop: 6, borderWidth: 1, borderColor: "#e2e8f0", borderRadius: 10, overflow: "hidden" },
+  filterOption: { minHeight: 44, paddingHorizontal: 12, flexDirection: "row", alignItems: "center", justifyContent: "space-between", backgroundColor: "#ffffff", borderBottomWidth: 1, borderBottomColor: "#f1f5f9" },
+  filterOptionText: { color: "#334155", fontSize: 14 },
+  filterOptionTextSelected: { color: "#1a1f6e", fontWeight: "700" },
+  filterOptionCheck: { color: "#1a1f6e", fontWeight: "800", fontSize: 16 },
   container: { flex: 1, backgroundColor: "#f1f5f9", padding: 16 },
   pageHeader: {
     marginBottom: 12,
@@ -2407,6 +2557,11 @@ const styles = StyleSheet.create({
   },
   filterButtonText: { color: "#ffffff", fontSize: 20, fontWeight: "700" },
   listContent: { paddingBottom: 20, gap: 12 },
+  pagination: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingVertical: 8 },
+  pageButton: { minHeight: 44, paddingHorizontal: 16, borderRadius: 10, backgroundColor: "#1a1f6e", alignItems: "center", justifyContent: "center" },
+  pageButtonDisabled: { backgroundColor: "#94a3b8" },
+  pageButtonText: { color: "#ffffff", fontWeight: "700" },
+  pageIndicator: { color: "#475569", fontWeight: "600" },
   groupSection: { gap: 10 },
   groupHeader: {
     backgroundColor: "#ffffff",
@@ -2775,6 +2930,17 @@ const styles = StyleSheet.create({
   attachmentLink: {
     color: "#1a1f6e",
     textDecorationLine: "underline",
+  },
+  activeFilterDot: {
+    position: "absolute",
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    top: 7,
+    right: 7,
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "#1a1f6e",
   },
   attachmentDelete: {
     color: "#b91c1c",
