@@ -60,6 +60,9 @@ interface ServerMaintenanceSchedule {
   intervalType?: string | null;
   status: string;
   priority?: "HIGH" | "MEDIUM" | "LOW" | null;
+  partsCost?: number | string | null;
+  laborCost?: number | string | null;
+  totalCost?: number | string | null;
   startDate?: string | null;
   assignedMechanic?: string | null;
   assignedDriver?: string | null;
@@ -444,6 +447,9 @@ function mapMaintenanceSchedule(
     priority: rawPriority === "HIGH" || rawPriority === "LOW" || rawPriority === "MEDIUM"
       ? rawPriority
       : "MEDIUM",
+    partsCost: getDecimal(scheduleRecord, ["partsCost", "parts_cost"]),
+    laborCost: getDecimal(scheduleRecord, ["laborCost", "labor_cost"]),
+    totalCost: getDecimal(scheduleRecord, ["totalCost", "total_cost"]),
     startDate: optionalText(
       findFirstValue(scheduleRecord, ["startDate", "start_date"]),
     ),
@@ -913,6 +919,16 @@ function getNumber(
   }
 
   return fallback;
+}
+
+function getDecimal(
+  record: Record<string, unknown>,
+  aliases: string[],
+): number | null {
+  const value = getValue(record, aliases);
+  if (value === undefined || value === null || value === "") return null;
+  const parsed = typeof value === "number" ? value : Number(String(value).trim());
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function getBoolean(

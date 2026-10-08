@@ -1,5 +1,5 @@
 export const DATABASE_NAME = "vmms_mobile.db";
-export const DATABASE_VERSION = 8;
+export const DATABASE_VERSION = 9;
 
 // Enums matching Prisma schema
 export enum VehicleStatus {
@@ -73,6 +73,9 @@ export interface MaintenanceSchedule {
   intervalType: MaintenanceIntervalType | null;
   startReferenceDate: string | null;
   previousScheduleId: string | null;
+  partsCost: number | null;
+  laborCost: number | null;
+  totalCost: number | null;
   workOrderProgress: string | null; // JSON stored as string
   deletedAt: string | null;
   createdAt: string;
@@ -134,6 +137,9 @@ export const CREATE_TABLES_SQL = `
     intervalType TEXT CHECK (intervalType IN ('DAILY', 'WEEKLY', 'MONTHLY', 'QUARTERLY', 'SEMI_ANNUALLY', 'ANNUALLY', NULL)),
     startReferenceDate TEXT,
     previousScheduleId TEXT UNIQUE,
+    partsCost REAL,
+    laborCost REAL,
+    totalCost REAL,
     workOrderProgress TEXT,
     deletedAt TEXT,
     createdAt TEXT NOT NULL,

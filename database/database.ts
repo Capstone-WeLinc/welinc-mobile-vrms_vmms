@@ -157,6 +157,9 @@ async function hasMissingRequiredColumns(
         "intervalType",
         "startReferenceDate",
         "previousScheduleId",
+        "partsCost",
+        "laborCost",
+        "totalCost",
         "workOrderProgress",
         "deletedAt",
         "createdAt",
@@ -253,6 +256,9 @@ async function migrateToV5(db: SQLite.SQLiteDatabase): Promise<void> {
         intervalType TEXT CHECK (intervalType IN ('DAILY', 'WEEKLY', 'MONTHLY', 'QUARTERLY', 'SEMI_ANNUALLY', 'ANNUALLY', NULL)),
         startReferenceDate TEXT,
         previousScheduleId TEXT UNIQUE,
+        partsCost REAL,
+        laborCost REAL,
+        totalCost REAL,
         workOrderProgress TEXT,
         deletedAt TEXT,
         createdAt TEXT NOT NULL,
@@ -390,6 +396,9 @@ async function ensureMaintenanceSchedulesSchema(
         intervalType TEXT CHECK (intervalType IN ('DAILY', 'WEEKLY', 'MONTHLY', 'QUARTERLY', 'SEMI_ANNUALLY', 'ANNUALLY', NULL)),
         startReferenceDate TEXT,
         previousScheduleId TEXT UNIQUE,
+        partsCost REAL,
+        laborCost REAL,
+        totalCost REAL,
         workOrderProgress TEXT,
         deletedAt TEXT,
         createdAt TEXT NOT NULL,
@@ -487,6 +496,9 @@ async function ensureMaintenanceSchedulesSchema(
     "previousScheduleId",
     "TEXT",
   );
+  await addColumnIfMissing(db, "maintenance_schedules", "partsCost", "REAL");
+  await addColumnIfMissing(db, "maintenance_schedules", "laborCost", "REAL");
+  await addColumnIfMissing(db, "maintenance_schedules", "totalCost", "REAL");
   await addColumnIfMissing(
     db,
     "maintenance_schedules",

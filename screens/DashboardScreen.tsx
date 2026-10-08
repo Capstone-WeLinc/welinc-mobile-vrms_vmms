@@ -1,18 +1,86 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-  FlatList,
-  Pressable,
   RefreshControl,
+  ScrollView,
   StyleSheet,
   Text,
   View,
 } from "react-native";
 
-import { getMaintenanceSchedules, getVehicles } from "../database/database";
-import type { MaintenanceSchedule, Vehicle } from "../database/tables";
+import { getMaintenanceSchedules } from "../database/database";
+import type { MaintenanceSchedule } from "../database/tables";
 import { getMobileAccessRole, type AuthenticatedUser } from "../services/AuthService";
 import { SyncService, type SyncResult } from "../services/SyncService";
 import { MobilePageHeader } from "../components/MobilePageHeader";
+
+type MechanicPerformanceSummary = {
+  key: string;
+  mechanic: string;
+  totalOrders: number;
+  pending: number;
+  inProgress: number;
+  overdue: number;
+  awaitingReview: number;
+  completed: number;
+  returned: number;
+  checklistItemsDone: number;
+  checklistItemsTotal: number;
+};
+
+function getScheduleWorkflowStatus(schedule: MaintenanceSchedule, progress: Record<string, unknown>): string {
+  if (typeof progress.workflowStatus === "string") return progress.workflowStatus;
+  switch (schedule.status) {
+    case "COMPLETED": return "Completed";
+    case "DONE": return "Done";
+    case "IN_PROGRESS": return "In Progress";
+    case "OVERDUE": return "Overdue";
+    case "DUE":
+    case "PENDING": return "Pending";
+    case "CANCELLED": return "Cancelled";
+    default: return "Pending";
+  }
+}
+
+function summarizeMechanicWork(schedules: MaintenanceSchedule[]): MechanicPerformanceSummary[] {
+  const summaries = new Map<string, MechanicPerformanceSummary>();
+  schedules
+    .filter((schedule) => schedule.assignedMechanicId && schedule.status !== "CANCELLED")
+    .forEach((schedule) => {
+      let progress: Record<string, unknown> = {};
+      try {
+        progress = schedule.workOrderProgress ? JSON.parse(schedule.workOrderProgress) as Record<string, unknown> : {};
+      } catch {
+        progress = {};
+      }
+      const key = schedule.assignedMechanicId!;
+      const summary = summaries.get(key) ?? {
+        key,
+        mechanic: schedule.assignedMechanic || "Assigned Mechanic",
+        totalOrders: 0,
+        pending: 0,
+        inProgress: 0,
+        overdue: 0,
+        awaitingReview: 0,
+        completed: 0,
+        returned: 0,
+        checklistItemsDone: 0,
+        checklistItemsTotal: 0,
+      };
+      const status = getScheduleWorkflowStatus(schedule, progress);
+      const items = Array.isArray(progress.executionItems) ? progress.executionItems as Array<{ status?: unknown }> : [];
+      summary.totalOrders += 1;
+      summary.checklistItemsTotal += items.length;
+      summary.checklistItemsDone += items.filter((item) => item.status === "checked" || item.status === "changed").length;
+      if (status === "Completed") summary.completed += 1;
+      else if (status === "Rejected" || status === "For Repair") summary.returned += 1;
+      else if (status === "Done" || status === "For Verification" || progress.mechanicSubmitted === true) summary.awaitingReview += 1;
+      else if (status === "In Progress") summary.inProgress += 1;
+      else if (status === "Overdue") summary.overdue += 1;
+      else if (status !== "Cancelled") summary.pending += 1;
+      summaries.set(key, summary);
+    });
+  return Array.from(summaries.values()).sort((left, right) => left.mechanic.localeCompare(right.mechanic));
+}
 
 interface DashboardScreenProps {
   user: AuthenticatedUser;
@@ -27,7 +95,6 @@ export function DashboardScreen({
   onLogout,
   onLoadingChange,
 }: DashboardScreenProps) {
-  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [schedules, setSchedules] = useState<MaintenanceSchedule[]>([]);
   const [pullRefreshing, setPullRefreshing] = useState(false);
   const [lastSync, setLastSync] = useState<string | null>(null);
@@ -35,15 +102,19 @@ export function DashboardScreen({
     "starting" | "online" | "offline" | "error"
   >("starting");
   const [error, setError] = useState<string | null>(null);
+  const accessRole = getMobileAccessRole(user.roles);
+  const isChiefMechanic = accessRole === "chiefMechanic";
+  const canViewPerformance = isChiefMechanic || accessRole === "mechanic";
+  const mechanicPerformance = canViewPerformance ? summarizeMechanicWork(schedules) : [];
 
   const loadCache = useCallback(async () => {
-    const [cachedVehicles, cachedSchedules] = await Promise.all([
-      getVehicles(),
-      getMaintenanceSchedules(),
-    ]);
-    setVehicles(cachedVehicles);
-    setSchedules(cachedSchedules.filter((schedule) => getMobileAccessRole(user.roles) === "chiefMechanic" ? schedule.chiefMechanicId === user.id : schedule.assignedMechanicId === user.id));
-  }, [user.id, user.roles]);
+    const cachedSchedules = await getMaintenanceSchedules();
+    setSchedules(cachedSchedules.filter((schedule) => {
+      if (accessRole === "chiefMechanic") return schedule.chiefMechanicId === user.id;
+      if (accessRole === "mechanic") return schedule.assignedMechanicId === user.id;
+      return false;
+    }));
+  }, [accessRole, user.id]);
 
   const applySyncResult = useCallback(
     async (result: SyncResult) => {
@@ -86,48 +157,8 @@ export function DashboardScreen({
   }, [applySyncResult, loadCache, syncService, synchronize]);
 
   return (
-    <FlatList
+    <ScrollView
       contentContainerStyle={styles.content}
-      data={vehicles}
-      keyExtractor={(vehicle) => vehicle.id}
-      ListEmptyComponent={
-        syncState === "starting" ? (
-          <Text style={styles.empty}>Loading vehicle data…</Text>
-        ) : (
-          <Text style={styles.empty}>No cached vehicles.</Text>
-        )
-      }
-      ListHeaderComponent={
-        <View style={styles.header}>
-          <MobilePageHeader title="Vehicle Maintenance" subtitle={`Signed in as ${user.name}`} />
-
-          <View
-            style={[styles.status, syncState === "error" && styles.statusError]}
-          >
-            <Text style={styles.statusText}>
-              {syncState === "online"
-                ? "Online"
-                : syncState === "offline"
-                  ? "Offline"
-                  : syncState === "error"
-                    ? "Sync failed"
-                    : "Checking connection…"}
-            </Text>
-            {lastSync ? (
-              <Text style={styles.timestamp}>
-                Last sync: {new Date(lastSync).toLocaleString()}
-              </Text>
-            ) : null}
-            {error ? <Text style={styles.error}>{error}</Text> : null}
-          </View>
-
-          <View style={styles.metrics}>
-            <Metric label="Vehicles" value={vehicles.length} />
-            <Metric label="Schedules" value={schedules.length} />
-          </View>
-          <Text style={styles.sectionTitle}>Vehicles</Text>
-        </View>
-      }
       refreshControl={
         <RefreshControl
           refreshing={pullRefreshing}
@@ -137,32 +168,80 @@ export function DashboardScreen({
           progressBackgroundColor="#ffffff"
         />
       }
-      renderItem={({ item }) => (
-        <View style={styles.vehicleCard}>
-          <View>
-            <Text style={styles.plate}>{item.plateNumber}</Text>
-            <Text style={styles.model}>{item.model}</Text>
-          </View>
-          <View style={styles.vehicleRight}>
-            <Text style={styles.vehicleStatus}>
-              {item.status.replaceAll("_", " ")}
-            </Text>
-            <Text style={styles.odometer}>
-              {item.odometer.toLocaleString()} km
-            </Text>
-          </View>
-        </View>
-      )}
-    />
-  );
-}
+    >
+      <View style={styles.header}>
+        <MobilePageHeader title="Vehicle Maintenance" subtitle={`Signed in as ${user.name}`} />
 
-function Metric({ label, value }: { label: string; value: number }) {
-  return (
-    <View style={styles.metric}>
-      <Text style={styles.metricValue}>{value}</Text>
-      <Text style={styles.metricLabel}>{label}</Text>
-    </View>
+        <View
+          style={[styles.status, syncState === "error" && styles.statusError]}
+        >
+          <Text style={styles.statusText}>
+            {syncState === "online"
+              ? "Online"
+              : syncState === "offline"
+                ? "Offline"
+                : syncState === "error"
+                  ? "Sync failed"
+                  : "Checking connection…"}
+          </Text>
+          {lastSync ? (
+            <Text style={styles.timestamp}>
+              Last sync: {new Date(lastSync).toLocaleString()}
+            </Text>
+          ) : null}
+          {error ? <Text style={styles.error}>{error}</Text> : null}
+        </View>
+
+        {canViewPerformance ? (
+            <View style={styles.performanceSection}>
+              <Text style={styles.sectionTitle}>{isChiefMechanic ? "Mechanic Performance" : "My Performance"}</Text>
+              <Text style={styles.performanceSubtitle}>
+                {isChiefMechanic
+                  ? "Progress for Mechanics assigned to your schedules."
+                  : "Your work-order progress and checklist completion."}
+              </Text>
+              {mechanicPerformance.length === 0 ? (
+                <Text style={styles.emptyCard}>
+                  {isChiefMechanic ? "No assigned Mechanic work is available yet." : "You have no assigned work orders yet."}
+                </Text>
+              ) : mechanicPerformance.map((summary) => {
+                const checklistPercent = summary.checklistItemsTotal
+                  ? Math.round((summary.checklistItemsDone / summary.checklistItemsTotal) * 100)
+                  : 0;
+                return (
+                  <View key={summary.key} style={styles.performanceCard}>
+                    <View style={styles.performanceCardHeader}>
+                      {isChiefMechanic ? <Text style={styles.performanceMechanicName}>{summary.mechanic}</Text> : null}
+                      <Text style={styles.performanceOrderCount}>{summary.totalOrders} work orders</Text>
+                    </View>
+                    <View style={styles.performanceMetrics}>
+                      {[
+                        { label: "Pending", value: summary.pending },
+                        { label: "In Progress", value: summary.inProgress },
+                        { label: "Overdue", value: summary.overdue },
+                        { label: "Awaiting Review", value: summary.awaitingReview },
+                        { label: "Completed", value: summary.completed },
+                        { label: "Returned", value: summary.returned },
+                      ].map((metric) => (
+                        <View key={metric.label} style={styles.performanceMetric}>
+                          <Text style={styles.performanceMetricValue}>{metric.value}</Text>
+                          <Text style={styles.performanceMetricLabel}>{metric.label}</Text>
+                        </View>
+                      ))}
+                    </View>
+                    <View style={styles.performanceChecklistRow}>
+                      <Text style={styles.performanceMetricLabel}>Checklist items complete</Text>
+                      <Text style={styles.performanceChecklistValue}>
+                        {summary.checklistItemsDone}/{summary.checklistItemsTotal} ({checklistPercent}%)
+                      </Text>
+                    </View>
+                  </View>
+                );
+              })}
+            </View>
+        ) : null}
+      </View>
+    </ScrollView>
   );
 }
 
@@ -193,36 +272,18 @@ const styles = StyleSheet.create({
   statusText: { color: "#0d0d0d", fontWeight: "600" },
   timestamp: { color: "#64748b", fontSize: 12, marginTop: 4 },
   error: { color: "#ef4444", fontSize: 12, marginTop: 4 },
-  metrics: { flexDirection: "row", gap: 12 },
-  metric: {
-    flex: 1,
-    padding: 16,
-    borderRadius: 12,
-    backgroundColor: "#ffffff",
-    borderWidth: 1,
-    borderColor: "#e2e8f0",
-  },
-  metricValue: { fontSize: 24, fontWeight: "700", color: "#1a1f6e" },
-  metricLabel: { color: "#64748b" },
+  performanceSection: { gap: 10 },
+  performanceSubtitle: { color: "#64748b", fontSize: 12, lineHeight: 17 },
+  emptyCard: { color: "#64748b", backgroundColor: "#ffffff", borderRadius: 12, padding: 12, fontSize: 12 },
+  performanceCard: { backgroundColor: "#ffffff", borderRadius: 12, borderWidth: 1, borderColor: "#e2e8f0", padding: 12, gap: 10 },
+  performanceCardHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 8 },
+  performanceMechanicName: { color: "#1a1f6e", fontWeight: "800", fontSize: 14, flex: 1 },
+  performanceOrderCount: { color: "#64748b", fontSize: 11, fontWeight: "700" },
+  performanceMetrics: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  performanceMetric: { width: "48%", backgroundColor: "#f8fafc", borderRadius: 8, padding: 8 },
+  performanceMetricValue: { color: "#0f172a", fontWeight: "800", fontSize: 16 },
+  performanceMetricLabel: { color: "#64748b", fontSize: 10, fontWeight: "700" },
+  performanceChecklistRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  performanceChecklistValue: { color: "#1a1f6e", fontSize: 11, fontWeight: "800" },
   sectionTitle: { fontSize: 18, fontWeight: "700", color: "#0d0d0d" },
-  vehicleCard: {
-    marginTop: 10,
-    borderRadius: 12,
-    padding: 15,
-    backgroundColor: "#ffffff",
-    borderWidth: 1,
-    borderColor: "#e2e8f0",
-    flexDirection: "row",
-    justifyContent: "space-between",
-    shadowColor: "#000",
-    shadowOpacity: 0.04,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 2 },
-  },
-  plate: { fontSize: 17, fontWeight: "700", color: "#0d0d0d" },
-  model: { color: "#64748b", marginTop: 2 },
-  vehicleRight: { alignItems: "flex-end" },
-  vehicleStatus: { color: "#1a1f6e", fontSize: 12, fontWeight: "600" },
-  odometer: { color: "#64748b", marginTop: 5 },
-  empty: { color: "#64748b", textAlign: "center", marginTop: 30 },
 });

@@ -95,6 +95,9 @@ type WorkOrder = {
   startDate: string | null;
   status: WorkOrderStatus;
   priority: "HIGH" | "MEDIUM" | "LOW";
+  partsCost: number | null;
+  laborCost: number | null;
+  totalCost: number | null;
   summary: string;
   details: string[];
   template: string;
@@ -464,6 +467,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
   const [statusFilter, setStatusFilter] = useState<string | null>(null);
   const [typeFilter, setTypeFilter] = useState<string | null>(null);
   const [priorityFilter, setPriorityFilter] = useState<string | null>(null);
+  const [chiefQueueMode, setChiefQueueMode] = useState<"monitoring" | "review">("monitoring");
   const [currentPage, setCurrentPage] = useState(1);
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [activeStep, setActiveStep] = useState<StepKey>("details");
@@ -569,6 +573,9 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
                         ? "Completed"
                         : "Overdue"),
               priority: schedule.priority ?? "MEDIUM",
+              partsCost: schedule.partsCost,
+              laborCost: schedule.laborCost,
+              totalCost: schedule.totalCost,
               summary: `${schedule.title} - ${schedule.intervalType || "As needed"}`,
               details: [],
               template: resolvedTemplate.templateName,
@@ -1008,9 +1015,13 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
     );
   };
 
-  const visibleOrders = workOrders.filter((order) => accessRole === "mechanic"
-    ? order.assignedMechanicId === user.id
-    : accessRole === "chiefMechanic" && isAwaitingChiefReview(order, user.id));
+  const chiefSupervisedOrders = workOrders.filter((order) => order.chiefMechanicId === user.id);
+  const chiefReviewOrders = chiefSupervisedOrders.filter((order) => isAwaitingChiefReview(order, user.id));
+  const visibleOrders = accessRole === "mechanic"
+    ? workOrders.filter((order) => order.assignedMechanicId === user.id)
+    : accessRole === "chiefMechanic"
+      ? chiefQueueMode === "review" ? chiefReviewOrders : chiefSupervisedOrders
+      : [];
   const statusOptions = [...new Set(visibleOrders.map((order) => order.status))].sort();
   const typeOptions = [...new Set(visibleOrders.map((order) => order.maintenanceType))].sort();
   const priorityOptions = ["HIGH", "MEDIUM", "LOW"];
@@ -1036,7 +1047,11 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
   const ordersPerPage = 10;
   const totalPages = Math.max(1, Math.ceil(filteredOrders.length / ordersPerPage));
   const pageOrders = filteredOrders.slice((currentPage - 1) * ordersPerPage, currentPage * ordersPerPage);
-
+  const checklistProgress = (order: WorkOrder) => {
+    const total = order.executionItems.length;
+    const completed = order.executionItems.filter((item) => item.status === "checked" || item.status === "changed").length;
+    return { completed, total, percent: total ? Math.round((completed / total) * 100) : 0 };
+  };
   useEffect(() => {
     setCurrentPage(1);
   }, [searchQuery, statusFilter, typeFilter, priorityFilter, accessRole, user.id]);
@@ -1407,6 +1422,9 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
 
   const isMechanicRole = accessRole === "mechanic";
   const isChiefMechanicRole = accessRole === "chiefMechanic";
+  const canChiefReviewSelectedOrder = Boolean(isChiefMechanicRole && selectedOrder &&
+    selectedOrder.chiefMechanicId === user.id && selectedOrder.mechanicSubmitted &&
+    isAwaitingChiefReview(selectedOrder, user.id));
   const visibleSteps = [
     { key: "details" as StepKey, label: "Details" },
     ...(isMechanicRole
@@ -1416,7 +1434,14 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
             ? [{ key: "parts" as StepKey, label: "Parts, Cost & Photos" }]
             : []),
         ]
-      : [{ key: "inspection" as StepKey, label: "Inspection Checklist" }]),
+      : selectedOrder
+        ? [
+            { key: "execution" as StepKey, label: "Mechanic Progress" },
+            ...(canChiefReviewSelectedOrder
+              ? [{ key: "inspection" as StepKey, label: "Inspection Checklist" }]
+              : []),
+          ]
+        : []),
   ];
 
   const exportPDF = () => {
@@ -1776,6 +1801,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
         selectedOrder.approvalStatus === "Verified" ||
         selectedOrder.status !== "In Progress") &&
       selectedOrder.approvalStatus !== "Rejected";
+    const executionReadOnly = isChiefMechanicRole || mechanicOrderLocked;
     const recordedParts = getChangedExecutionItems(selectedOrder.executionItems).flatMap((item) => {
       const entry = selectedOrder.partDetails[item.id];
       return (typeof entry?.partsUsed === "string" && entry.partsUsed.trim()) || entry?.attachments?.length
@@ -1967,8 +1993,9 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
             <View style={styles.detailCard}>
               <Text style={styles.sectionTitle}>Execution Checklist</Text>
               <Text style={styles.sectionText}>
-                Mark each item as Checked, Changed, or Not Checked and capture
-                notes.
+                {isChiefMechanicRole
+                  ? "Read-only view of the Mechanic's checklist progress. Checked and Changed items count as complete."
+                  : "Mark each item as Checked, Changed, or Not Checked and capture notes."}
               </Text>
               {selectedOrder.executionItems.length === 0 ? (
                 <Text style={styles.emptyPartsText}>
@@ -2001,7 +2028,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
                         ].map((option) => (
                           <TouchableOpacity
                             key={option.key}
-                            disabled={mechanicOrderLocked}
+                            disabled={executionReadOnly}
                             style={[
                               styles.pillButton,
                               item.status === option.key && {
@@ -2030,7 +2057,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
                       </View>
                       <TextInput
                         style={styles.noteInput}
-                        editable={!mechanicOrderLocked}
+                        editable={!executionReadOnly}
                         placeholder="Add note"
                         placeholderTextColor="#94a3b8"
                         value={item.note}
@@ -2048,7 +2075,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
                 <Text style={styles.sectionText}>Describe the maintenance work performed and any additional information about this activity.</Text>
                 <TextInput
                   style={styles.remarksInput}
-                  editable={!mechanicOrderLocked}
+                  editable={!executionReadOnly}
                   placeholder="Describe the work performed"
                   placeholderTextColor="#94a3b8"
                   multiline
@@ -2085,7 +2112,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
                         <Text style={styles.partsLabel}>Parts Used</Text>
                         <TextInput
                           style={styles.partsInput}
-                          editable={!mechanicOrderLocked}
+                          editable={!executionReadOnly}
                           value={partEntry.partsUsed}
                           onChangeText={(text) =>
                             updatePartDetailField(
@@ -2105,7 +2132,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
                         </Text>
                         <TextInput
                           style={styles.partsInput}
-                          editable={!mechanicOrderLocked}
+                          editable={!executionReadOnly}
                           value={partEntry.quantity}
                           keyboardType="numeric"
                           onChangeText={(text) =>
@@ -2126,7 +2153,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
                         <Text style={styles.partsLabel}>Material Cost</Text>
                         <TextInput
                           style={styles.partsInput}
-                          editable={!mechanicOrderLocked}
+                          editable={!executionReadOnly}
                           value={partEntry.materialCost}
                           keyboardType="decimal-pad"
                           onChangeText={(text) =>
@@ -2145,7 +2172,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
                     <Text style={styles.partsLabel}>Photos / Attachments</Text>
                     <TouchableOpacity
                       style={styles.uploadButton}
-                      disabled={mechanicOrderLocked}
+                      disabled={executionReadOnly}
                       onPress={() =>
                         addAttachmentToItem(selectedOrder.id, item.id)
                       }
@@ -2188,15 +2215,6 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
                 </Text>
               )}
 
-              <View style={styles.costSummaryRow}>
-                <View style={styles.costCard}>
-                  <Text style={styles.costLabel}>Total Cost</Text>
-                  <Text style={styles.costValue}>
-                    ₱{calculateMaterialCost(selectedOrder.id)}
-                  </Text>
-                </View>
-              </View>
-
             </View>
           )}
 
@@ -2207,6 +2225,22 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
               <Text style={styles.sectionText}>
                 Verify the execution submitted by {selectedOrder.mechanic}.
               </Text>
+              {canChiefReviewSelectedOrder ? (
+                <View style={styles.costSummaryRow} accessibilityLabel="Maintenance cost summary">
+                  {[
+                    { label: "Parts Cost", value: selectedOrder.partsCost },
+                    { label: "Labor Cost", value: selectedOrder.laborCost },
+                    { label: "Total Maintenance Cost", value: selectedOrder.totalCost },
+                  ].map((cost) => (
+                    <View key={cost.label} style={styles.costCard}>
+                      <Text style={styles.costLabel}>{cost.label}</Text>
+                      <Text style={styles.costValue}>
+                        {cost.value == null ? "Not recorded" : `₱${cost.value.toFixed(2)}`}
+                      </Text>
+                    </View>
+                  ))}
+                </View>
+              ) : null}
               {selectedOrder.inspectionItems.map((item) => (
                 <View key={item.id} style={styles.checklistItemCard}>
                   <Text style={styles.checklistItemLabel}>{item.label}</Text>
@@ -2332,7 +2366,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
           >
             <Text style={styles.bottomButtonPrimaryText}>Next</Text>
           </TouchableOpacity>
-          <TouchableOpacity
+          {(!isChiefMechanicRole || (canChiefReviewSelectedOrder && activeStep === "inspection")) ? <TouchableOpacity
             style={[
               styles.bottomButtonPrimary,
               styles.inspectionActionButton,
@@ -2372,6 +2406,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
                 : getInspectionActionLabel(getAutomaticInspectionRemark(selectedOrder.inspectionItems))}
             </Text>
           </TouchableOpacity>
+          : null}
         </View>
       </View>
     );
@@ -2383,10 +2418,35 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
         <MobilePageHeader
           title="Work Orders"
           subtitle={isChiefMechanicRole
-            ? "Review and verify inspection checklists"
+            ? "Monitor mechanic progress and review completed submissions"
             : "Your assigned work orders grouped by mechanic"}
         />
       </View>
+
+      {isChiefMechanicRole ? (
+        <View style={styles.chiefQueueToggle}>
+          <TouchableOpacity
+            style={[styles.chiefQueueTab, chiefQueueMode === "monitoring" && styles.chiefQueueTabActive]}
+            onPress={() => { setChiefQueueMode("monitoring"); setCurrentPage(1); }}
+            accessibilityRole="tab"
+            accessibilityState={{ selected: chiefQueueMode === "monitoring" }}
+          >
+            <Text style={[styles.chiefQueueTabText, chiefQueueMode === "monitoring" && styles.chiefQueueTabTextActive]}>
+              Monitoring ({chiefSupervisedOrders.length})
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.chiefQueueTab, chiefQueueMode === "review" && styles.chiefQueueTabActive]}
+            onPress={() => { setChiefQueueMode("review"); setCurrentPage(1); }}
+            accessibilityRole="tab"
+            accessibilityState={{ selected: chiefQueueMode === "review" }}
+          >
+            <Text style={[styles.chiefQueueTabText, chiefQueueMode === "review" && styles.chiefQueueTabTextActive]}>
+              Awaiting Review ({chiefReviewOrders.length})
+            </Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
 
       <View style={styles.searchRow}>
         <TextInput
@@ -2477,7 +2537,9 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
             <Text style={styles.emptyStateText}>
               {filtersActive ? "Try a different search or clear the filters." : accessRole === "mechanic"
                 ? "No execution work orders are assigned to you right now."
-                : "No inspection work orders are assigned to you right now."}
+                : chiefQueueMode === "review"
+                  ? "No completed work orders are waiting for your review."
+                  : "No work orders are assigned to you for supervision right now."}
             </Text>
           </View>
         ) : (
@@ -2509,13 +2571,30 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
                       <Text style={styles.cardLabel}>Mechanic</Text>
                     </View>
                     <Text style={styles.cardValue}>{order.mechanic}</Text>
+                    {isChiefMechanicRole && chiefQueueMode === "monitoring" ? (() => {
+                      const progress = checklistProgress(order);
+                      return (
+                        <View style={styles.progressSummary}>
+                          <View style={styles.cardRow}>
+                            <Text style={styles.cardLabel}>Mechanic Checklist Progress</Text>
+                            <Text style={styles.progressPercent}>{progress.percent}%</Text>
+                          </View>
+                          <View style={styles.progressTrack}>
+                            <View style={[styles.progressFill, { width: `${progress.percent}%` }]} />
+                          </View>
+                          <Text style={styles.progressCaption}>
+                            {progress.completed} of {progress.total} items complete
+                          </Text>
+                        </View>
+                      );
+                    })() : null}
                     <View style={styles.cardRow}>
                       <Text style={styles.cardLabel}>Date Created</Text>
                     </View>
                     <Text style={styles.cardValue}>{order.dateCreated}</Text>
                   </View>
                   <View style={styles.orderCardFooter}>
-                    <Text style={styles.cardHint}>Open details</Text>
+                    <Text style={styles.cardHint}>{isChiefMechanicRole && chiefQueueMode === "monitoring" ? "View mechanic progress" : "Open details"}</Text>
                     <Text style={styles.cardArrow}>›</Text>
                   </View>
                 </Pressable>
@@ -2550,6 +2629,16 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
 }
 
 const styles = StyleSheet.create({
+  chiefQueueToggle: { flexDirection: "row", backgroundColor: "#e2e8f0", borderRadius: 12, padding: 4, gap: 4, marginBottom: 12 },
+  chiefQueueTab: { flex: 1, minHeight: 44, paddingHorizontal: 8, borderRadius: 9, alignItems: "center", justifyContent: "center" },
+  chiefQueueTabActive: { backgroundColor: "#ffffff", shadowColor: "#000", shadowOpacity: 0.06, shadowRadius: 4, shadowOffset: { width: 0, height: 1 } },
+  chiefQueueTabText: { color: "#475569", fontSize: 12, fontWeight: "700", textAlign: "center" },
+  chiefQueueTabTextActive: { color: "#1a1f6e" },
+  progressSummary: { marginTop: 8, padding: 10, borderRadius: 10, backgroundColor: "#f8fafc", borderWidth: 1, borderColor: "#e2e8f0" },
+  progressPercent: { color: "#1a1f6e", fontSize: 12, fontWeight: "800" },
+  progressTrack: { height: 7, marginTop: 7, borderRadius: 99, overflow: "hidden", backgroundColor: "#e2e8f0" },
+  progressFill: { height: "100%", borderRadius: 99, backgroundColor: "#1a1f6e" },
+  progressCaption: { color: "#64748b", fontSize: 11, marginTop: 5 },
   filterPanel: { padding: 12, backgroundColor: "#ffffff", borderRadius: 12, marginBottom: 12 },
   filterMenuSection: { marginBottom: 8 },
   filterMenuHeader: { flexDirection: "row", alignItems: "center", gap: 12 },
