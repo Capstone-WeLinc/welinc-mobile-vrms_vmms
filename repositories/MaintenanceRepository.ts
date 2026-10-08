@@ -11,14 +11,15 @@ export class MaintenanceRepository {
     try {
       await this.db.runAsync(
         `INSERT INTO maintenance_schedules
-          (id, workOrderNumber, vehicleId, title, garageId, status, startDate, assignedMechanic, assignedMechanicId, chiefMechanicId, accountType, checklistTemplateId, odometerReading, triggerType, intervalKm, bufferDistanceKm, startingReferenceReadingKm, intervalType, startReferenceDate, previousScheduleId, workOrderProgress, deletedAt, createdAt, updatedAt)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          (id, workOrderNumber, vehicleId, title, garageId, status, priority, startDate, assignedMechanic, assignedMechanicId, chiefMechanicId, accountType, checklistTemplateId, odometerReading, triggerType, intervalKm, bufferDistanceKm, startingReferenceReadingKm, intervalType, startReferenceDate, previousScheduleId, workOrderProgress, deletedAt, createdAt, updatedAt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         schedule.id,
         schedule.workOrderNumber,
         schedule.vehicleId,
         schedule.title,
         schedule.garageId,
         schedule.status,
+        schedule.priority ?? "MEDIUM",
         schedule.startDate,
         schedule.assignedMechanic,
         schedule.assignedMechanicId,
@@ -114,14 +115,15 @@ export class MaintenanceRepository {
         );
         await this.db.runAsync(
           `INSERT INTO maintenance_schedules
-            (id, workOrderNumber, vehicleId, title, garageId, status, startDate, assignedMechanic, assignedMechanicId, chiefMechanicId, accountType, checklistTemplateId, odometerReading, triggerType, intervalKm, bufferDistanceKm, startingReferenceReadingKm, intervalType, startReferenceDate, previousScheduleId, workOrderProgress, deletedAt, createdAt, updatedAt)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, workOrderNumber, vehicleId, title, garageId, status, priority, startDate, assignedMechanic, assignedMechanicId, chiefMechanicId, accountType, checklistTemplateId, odometerReading, triggerType, intervalKm, bufferDistanceKm, startingReferenceReadingKm, intervalType, startReferenceDate, previousScheduleId, workOrderProgress, deletedAt, createdAt, updatedAt)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(id) DO UPDATE SET
              workOrderNumber = excluded.workOrderNumber,
              vehicleId = excluded.vehicleId,
              title = excluded.title,
              garageId = excluded.garageId,
              status = excluded.status,
+             priority = excluded.priority,
              startDate = excluded.startDate,
              assignedMechanic = excluded.assignedMechanic,
              assignedMechanicId = excluded.assignedMechanicId,
@@ -168,7 +170,8 @@ export class MaintenanceRepository {
           schedule.vehicleId,
           schedule.title,
           schedule.garageId,
-          schedule.status,
+            schedule.status,
+            schedule.priority ?? "MEDIUM",
           schedule.startDate,
           schedule.assignedMechanic,
         schedule.assignedMechanicId,

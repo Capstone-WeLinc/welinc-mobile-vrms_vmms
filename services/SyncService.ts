@@ -59,6 +59,7 @@ interface ServerMaintenanceSchedule {
   triggerType?: string | null;
   intervalType?: string | null;
   status: string;
+  priority?: "HIGH" | "MEDIUM" | "LOW" | null;
   startDate?: string | null;
   assignedMechanic?: string | null;
   assignedDriver?: string | null;
@@ -398,6 +399,7 @@ function mapMaintenanceSchedule(
   fallbackTimestamp: string,
 ): MaintenanceSchedule {
   const scheduleRecord = record as unknown as Record<string, unknown>;
+  const rawPriority = extractStringValue(scheduleRecord, ["priority"]);
 
   return {
     id: requireText(getValue(scheduleRecord, ["id"]), "maintenanceSchedule.id"),
@@ -439,6 +441,9 @@ function mapMaintenanceSchedule(
       ]),
       "maintenanceSchedule.status",
     ) as any,
+    priority: rawPriority === "HIGH" || rawPriority === "LOW" || rawPriority === "MEDIUM"
+      ? rawPriority
+      : "MEDIUM",
     startDate: optionalText(
       findFirstValue(scheduleRecord, ["startDate", "start_date"]),
     ),

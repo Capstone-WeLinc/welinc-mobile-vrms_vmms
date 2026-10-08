@@ -142,6 +142,7 @@ async function hasMissingRequiredColumns(
         "title",
         "garageId",
         "status",
+        "priority",
         "startDate",
         "assignedMechanic",
         "assignedMechanicId",
@@ -237,6 +238,7 @@ async function migrateToV5(db: SQLite.SQLiteDatabase): Promise<void> {
         title TEXT NOT NULL,
         garageId TEXT,
         status TEXT NOT NULL CHECK (status IN ('PENDING', 'DUE', 'IN_PROGRESS', 'DONE', 'COMPLETED', 'OVERDUE', 'CANCELLED')),
+        priority TEXT NOT NULL DEFAULT 'MEDIUM' CHECK (priority IN ('HIGH', 'MEDIUM', 'LOW')),
         startDate TEXT,
         assignedMechanic TEXT,
         assignedMechanicId TEXT,
@@ -259,7 +261,7 @@ async function migrateToV5(db: SQLite.SQLiteDatabase): Promise<void> {
         FOREIGN KEY (previousScheduleId) REFERENCES maintenance_schedules_v5(id) ON DELETE SET NULL
       );
       INSERT INTO maintenance_schedules_v5
-        SELECT id, vehicleId, title, garageId, status, startDate, assignedMechanic,
+        SELECT id, vehicleId, title, garageId, status, 'MEDIUM', startDate, assignedMechanic,
           assignedMechanicId, chiefMechanicId, accountType, checklistTemplateId,
           odometerReading, triggerType, intervalKm, bufferDistanceKm,
           startingReferenceReadingKm, intervalType, startReferenceDate,
@@ -376,6 +378,7 @@ async function ensureMaintenanceSchedulesSchema(
         title TEXT NOT NULL,
         garageId TEXT,
         status TEXT NOT NULL CHECK (status IN ('PENDING', 'DUE', 'IN_PROGRESS', 'DONE', 'COMPLETED', 'OVERDUE', 'CANCELLED')),
+        priority TEXT NOT NULL DEFAULT 'MEDIUM' CHECK (priority IN ('HIGH', 'MEDIUM', 'LOW')),
         assignedMechanic TEXT,
         accountType TEXT CHECK (accountType IN ('IN_HOUSE', 'OUTSOURCED', NULL)),
         checklistTemplateId TEXT,
@@ -423,6 +426,12 @@ async function ensureMaintenanceSchedulesSchema(
     "maintenance_schedules",
     "status",
     "TEXT NOT NULL DEFAULT 'PENDING'",
+  );
+  await addColumnIfMissing(
+    db,
+    "maintenance_schedules",
+    "priority",
+    "TEXT NOT NULL DEFAULT 'MEDIUM' CHECK (priority IN ('HIGH', 'MEDIUM', 'LOW'))",
   );
   await addColumnIfMissing(db, "maintenance_schedules", "startDate", "TEXT");
   await addColumnIfMissing(

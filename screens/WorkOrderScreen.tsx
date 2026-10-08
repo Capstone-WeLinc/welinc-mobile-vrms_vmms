@@ -94,6 +94,7 @@ type WorkOrder = {
   createdAtTimestamp: number;
   startDate: string | null;
   status: WorkOrderStatus;
+  priority: "HIGH" | "MEDIUM" | "LOW";
   summary: string;
   details: string[];
   template: string;
@@ -459,9 +460,10 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
   const [reloadVersion, setReloadVersion] = useState(0);
   const [searchQuery, setSearchQuery] = useState("");
   const [showFilters, setShowFilters] = useState(false);
-  const [openFilterMenu, setOpenFilterMenu] = useState<"status" | "type" | null>(null);
+  const [openFilterMenu, setOpenFilterMenu] = useState<"status" | "type" | "priority" | null>(null);
   const [statusFilter, setStatusFilter] = useState<string | null>(null);
   const [typeFilter, setTypeFilter] = useState<string | null>(null);
+  const [priorityFilter, setPriorityFilter] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [activeStep, setActiveStep] = useState<StepKey>("details");
@@ -566,6 +568,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
                       : schedule.status === "COMPLETED"
                         ? "Completed"
                         : "Overdue"),
+              priority: schedule.priority ?? "MEDIUM",
               summary: `${schedule.title} - ${schedule.intervalType || "As needed"}`,
               details: [],
               template: resolvedTemplate.templateName,
@@ -584,6 +587,10 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
                 {
                   label: "Checklist Template",
                   value: resolvedTemplate.templateName,
+                },
+                {
+                  label: "Priority",
+                  value: (schedule.priority ?? "MEDIUM").charAt(0) + (schedule.priority ?? "MEDIUM").slice(1).toLowerCase(),
                 },
                 {
                   label: "Date Created",
@@ -1006,8 +1013,9 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
     : accessRole === "chiefMechanic" && isAwaitingChiefReview(order, user.id));
   const statusOptions = [...new Set(visibleOrders.map((order) => order.status))].sort();
   const typeOptions = [...new Set(visibleOrders.map((order) => order.maintenanceType))].sort();
-  const filtersActive = Boolean(searchQuery.trim() || statusFilter || typeFilter);
-  const clearFilters = () => { setSearchQuery(""); setStatusFilter(null); setTypeFilter(null); };
+  const priorityOptions = ["HIGH", "MEDIUM", "LOW"];
+  const filtersActive = Boolean(searchQuery.trim() || statusFilter || typeFilter || priorityFilter);
+  const clearFilters = () => { setSearchQuery(""); setStatusFilter(null); setTypeFilter(null); setPriorityFilter(null); };
   const filteredOrders = visibleOrders.filter((order) => {
     const query = searchQuery.trim().toLowerCase();
     const matchesQuery =
@@ -1018,7 +1026,8 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
       order.chiefMechanic.toLowerCase().includes(query);
 
     return matchesQuery && (!statusFilter || order.status === statusFilter) &&
-      (!typeFilter || order.maintenanceType === typeFilter);
+      (!typeFilter || order.maintenanceType === typeFilter) &&
+      (!priorityFilter || order.priority === priorityFilter);
   }).sort((left, right) =>
     right.createdAtTimestamp - left.createdAtTimestamp ||
     right.number.localeCompare(left.number, undefined, { numeric: true }),
@@ -1030,7 +1039,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchQuery, statusFilter, typeFilter, accessRole, user.id]);
+  }, [searchQuery, statusFilter, typeFilter, priorityFilter, accessRole, user.id]);
 
   useEffect(() => {
     if (currentPage > totalPages) setCurrentPage(totalPages);
@@ -1470,6 +1479,25 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
     </View>
   );
 
+  const renderPriorityBadge = (priority: WorkOrder["priority"]) => {
+    const label = priority.charAt(0) + priority.slice(1).toLowerCase();
+    const badgeStyle = priority === "HIGH"
+      ? styles.priorityHigh
+      : priority === "LOW"
+        ? styles.priorityLow
+        : styles.priorityMedium;
+    const textStyle = priority === "HIGH"
+      ? styles.priorityHighText
+      : priority === "LOW"
+        ? styles.priorityLowText
+        : styles.priorityMediumText;
+    return (
+      <View style={[styles.priorityBadge, badgeStyle]}>
+        <Text style={[styles.priorityBadgeText, textStyle]}>{label}</Text>
+      </View>
+    );
+  };
+
   const verificationMessage = (order: WorkOrder): string | null => {
     if (order.approvalStatus === "Rejected") {
       return "Rejected, execute or check your list again";
@@ -1849,7 +1877,9 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
                   {selectedOrder.scheduleDetails.map((detail, idx) => (
                     <View key={idx} style={styles.scheduleItem}>
                       <Text style={styles.scheduleLabel}>{detail.label}</Text>
-                      <Text style={styles.scheduleValue}>{detail.value}</Text>
+                      {detail.label === "Priority" ? renderPriorityBadge(selectedOrder.priority) : (
+                        <Text style={styles.scheduleValue}>{detail.value}</Text>
+                      )}
                     </View>
                   ))}
                 </View>
@@ -2379,7 +2409,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
               strokeLinejoin="round"
             />
           </Svg>
-          {statusFilter || typeFilter ? <View style={styles.activeFilterDot} /> : null}
+          {statusFilter || typeFilter || priorityFilter ? <View style={styles.activeFilterDot} /> : null}
         </TouchableOpacity>
       </View>
 
@@ -2388,12 +2418,13 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
           {[
             { key: "status" as const, label: "Status", options: statusOptions, selected: statusFilter, select: setStatusFilter },
             { key: "type" as const, label: "Maintenance Type", options: typeOptions, selected: typeFilter, select: setTypeFilter },
+            { key: "priority" as const, label: "Priority", options: priorityOptions, selected: priorityFilter, select: setPriorityFilter },
           ].map((filter) => (
             <View key={filter.key} style={styles.filterMenuSection}>
               <View style={styles.filterMenuHeader}>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.remarksLabel}>{filter.label}</Text>
-                  <Text style={styles.filterSelectedValue}>{filter.selected ?? "All"}</Text>
+                  <Text style={styles.filterSelectedValue}>{filter.key === "priority" && filter.selected ? filter.selected.charAt(0) + filter.selected.slice(1).toLowerCase() : filter.selected ?? "All"}</Text>
                 </View>
                 <TouchableOpacity
                   onPress={() => setOpenFilterMenu((current) => current === filter.key ? null : filter.key)}
@@ -2416,7 +2447,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
                       style={styles.filterOption}
                     >
                       <Text style={[styles.filterOptionText, filter.selected === option && styles.filterOptionTextSelected]}>
-                        {option ?? "All"}
+                        {filter.key === "priority" && option ? option.charAt(0) + option.slice(1).toLowerCase() : option ?? "All"}
                       </Text>
                       {filter.selected === option ? <Text style={styles.filterOptionCheck}>✓</Text> : null}
                     </TouchableOpacity>
@@ -2470,6 +2501,10 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
                     <Text style={styles.cardValue}>
                       {order.maintenanceType}
                     </Text>
+                    <View style={styles.cardRow}>
+                      <Text style={styles.cardLabel}>Priority</Text>
+                    </View>
+                    {renderPriorityBadge(order.priority)}
                     <View style={styles.cardRow}>
                       <Text style={styles.cardLabel}>Mechanic</Text>
                     </View>
@@ -2631,6 +2666,14 @@ const styles = StyleSheet.create({
   statusOverdue: workOrderStatusColors.overdue,
   statusCompleted: workOrderStatusColors.completed,
   statusBadgeText: { fontSize: 11, fontWeight: "700", color: workOrderStatusTextColor },
+  priorityBadge: { alignSelf: "flex-start", borderRadius: 999, borderWidth: 1, paddingHorizontal: 10, paddingVertical: 4 },
+  priorityHigh: { backgroundColor: "#fee2e2", borderColor: "#fca5a5" },
+  priorityMedium: { backgroundColor: "#fef3c7", borderColor: "#fcd34d" },
+  priorityLow: { backgroundColor: "#d1fae5", borderColor: "#6ee7b7" },
+  priorityBadgeText: { fontSize: 11, fontWeight: "800" },
+  priorityHighText: { color: "#9f1239" },
+  priorityMediumText: { color: "#92400e" },
+  priorityLowText: { color: "#065f46" },
   cardBody: { gap: 4 },
   cardRow: { marginTop: 8 },
   cardBoldLabel: {
