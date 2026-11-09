@@ -87,6 +87,8 @@ type WorkOrder = {
   number: string;
   plate: string;
   maintenanceType: string;
+  maintenanceClass: "REPAIR" | "PREVENTIVE" | "";
+  serviceOdometerReading: number | null;
   mechanic: string;
   assignedMechanicId: string | null;
   chiefMechanicId: string | null;
@@ -130,6 +132,9 @@ type PersistedWorkOrderProgress = Omit<
   >,
   "approvalStatus"
 > & {
+  maintenanceClass?: "REPAIR" | "PREVENTIVE" | "";
+  laborCost?: number | null;
+  serviceOdometerReading?: number | null;
   mechanicSubmitted?: boolean;
   workflowStatus?: WorkOrderStatus;
   approvalStatus?: InspectionRemark | "Incomplete" | "Unverified Remarks";
@@ -155,6 +160,15 @@ const parseWorkOrderProgress = (
         typeof parsed.maintenanceRemarks === "string"
           ? parsed.maintenanceRemarks
           : "",
+      maintenanceClass: parsed.maintenanceClass === "REPAIR" || parsed.maintenanceClass === "PREVENTIVE"
+        ? parsed.maintenanceClass
+        : "",
+      serviceOdometerReading: typeof parsed.serviceOdometerReading === "number" && Number.isInteger(parsed.serviceOdometerReading)
+        ? parsed.serviceOdometerReading
+        : undefined,
+      laborCost: typeof parsed.laborCost === "number" && Number.isFinite(parsed.laborCost)
+        ? parsed.laborCost
+        : undefined,
       chiefMechanic:
         typeof parsed.chiefMechanic === "string" ? parsed.chiefMechanic : "",
       inspectorRemarks:
@@ -555,6 +569,8 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
               number: getPersistedWorkOrderNumber(schedule.workOrderNumber),
               plate: vehicle?.plateNumber ?? schedule.vehicleId,
               maintenanceType: schedule.title,
+              maintenanceClass: savedProgress.maintenanceClass ?? "",
+              serviceOdometerReading: savedProgress.serviceOdometerReading ?? schedule.odometerReading,
               mechanic: schedule.assignedMechanic || "Unassigned",
               assignedMechanicId: schedule.assignedMechanicId,
               chiefMechanicId: schedule.chiefMechanicId,
@@ -574,7 +590,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
                         : "Overdue"),
               priority: schedule.priority ?? "MEDIUM",
               partsCost: schedule.partsCost,
-              laborCost: schedule.laborCost,
+              laborCost: savedProgress.laborCost ?? schedule.laborCost,
               totalCost: schedule.totalCost,
               summary: `${schedule.title} - ${schedule.intervalType || "As needed"}`,
               details: [],
@@ -864,6 +880,9 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
       executionItems: Array.isArray(order.executionItems) ? order.executionItems : [], partDetails,
       inspectionItems: Array.isArray(order.inspectionItems) ? order.inspectionItems : [], chiefMechanic: order.chiefMechanic,
       maintenanceRemarks: order.maintenanceRemarks, inspectorRemarks: order.inspectorRemarks,
+      maintenanceClass: order.maintenanceClass,
+      serviceOdometerReading: order.serviceOdometerReading,
+      laborCost: order.laborCost,
       rejectionRemarks: order.rejectionRemarks, approvalStatus: order.approvalStatus,
       mechanicSubmitted: order.mechanicSubmitted, workflowStatus: order.status, action,
       partsCost,
@@ -1130,6 +1149,26 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
     updateWorkOrder(orderId, (order) => ({
       ...order,
       maintenanceRemarks: remarks,
+    }));
+  };
+
+  const updateMaintenanceClass = (orderId: string, maintenanceClass: WorkOrder["maintenanceClass"]) => {
+    updateWorkOrder(orderId, (order) => ({ ...order, maintenanceClass }));
+  };
+
+  const updateLaborCost = (orderId: string, rawValue: string) => {
+    const parsed = rawValue.trim() === "" ? null : Number(rawValue);
+    updateWorkOrder(orderId, (order) => ({
+      ...order,
+      laborCost: parsed !== null && Number.isFinite(parsed) && parsed >= 0 ? parsed : null,
+    }));
+  };
+
+  const updateServiceOdometer = (orderId: string, rawValue: string) => {
+    const parsed = rawValue.trim() === "" ? null : Number(rawValue);
+    updateWorkOrder(orderId, (order) => ({
+      ...order,
+      serviceOdometerReading: parsed !== null && Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null,
     }));
   };
 
@@ -1899,6 +1938,25 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
                 <Text style={styles.sectionText}>
                   Details from the maintenance schedule.
                 </Text>
+                <View style={styles.remarksSection}>
+                  <Text style={styles.remarksLabel}>Maintenance Type *</Text>
+                  <Text style={styles.sectionText}>Classify this work as Repair or Preventive.</Text>
+                  <View style={styles.pillButtonRow}>
+                    {([
+                      { value: "REPAIR" as const, label: "Repair" },
+                      { value: "PREVENTIVE" as const, label: "Preventive" },
+                    ]).map((option) => (
+                      <TouchableOpacity
+                        key={option.value}
+                        disabled={!isMechanicRole || selectedOrder.mechanicSubmitted || mechanicOrderLocked}
+                        style={[styles.pillButton, selectedOrder.maintenanceClass === option.value && { backgroundColor: "#1a1f6e" }]}
+                        onPress={() => updateMaintenanceClass(selectedOrder.id, option.value)}
+                      >
+                        <Text style={[styles.pillButtonText, selectedOrder.maintenanceClass === option.value && styles.pillButtonTextActive]}>{option.label}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </View>
                 <View style={styles.scheduleGrid}>
                   {selectedOrder.scheduleDetails.map((detail, idx) => (
                     <View key={idx} style={styles.scheduleItem}>
@@ -1908,6 +1966,18 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
                       )}
                     </View>
                   ))}
+                </View>
+                <View style={styles.remarksSection}>
+                  <Text style={styles.remarksLabel}>Odometer at Time of Service (km) *</Text>
+                  <TextInput
+                    style={styles.partsInput}
+                    editable={isMechanicRole && !selectedOrder.mechanicSubmitted && !mechanicOrderLocked}
+                    keyboardType="number-pad"
+                    placeholder="Enter current odometer reading"
+                    placeholderTextColor="#94a3b8"
+                    value={selectedOrder.serviceOdometerReading == null ? "" : String(selectedOrder.serviceOdometerReading)}
+                    onChangeText={(text) => updateServiceOdometer(selectedOrder.id, text)}
+                  />
                 </View>
 
                 {isMechanicRole && selectedOrder.rejectionRemarks.trim() ? (
@@ -2094,6 +2164,21 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
               <Text style={styles.sectionText}>
                 Record any parts or materials used against the relevant checklist item. Parts, quantity, cost, and an attachment are required for items marked Changed.
               </Text>
+              <View style={styles.remarksSection}>
+                <Text style={styles.remarksLabel}>Labor Cost (₱) *</Text>
+                <TextInput
+                  style={styles.partsInput}
+                  editable={isMechanicRole && !selectedOrder.mechanicSubmitted && !mechanicOrderLocked}
+                  keyboardType="decimal-pad"
+                  placeholder="Enter labor cost"
+                  placeholderTextColor="#94a3b8"
+                  value={selectedOrder.laborCost == null ? "" : String(selectedOrder.laborCost)}
+                  onChangeText={(text) => updateLaborCost(selectedOrder.id, text)}
+                />
+                <Text style={styles.sectionText}>
+                  Total maintenance cost is computed from itemized parts and labor when submitted.
+                </Text>
+              </View>
 
               {getChangedExecutionItems(selectedOrder.executionItems).map((item) => {
                 const partEntry = selectedOrder.partDetails[item.id] ?? {
