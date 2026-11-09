@@ -4,7 +4,7 @@ export const workOrderStatusColors = {
   verification: { backgroundColor: "#fef3c7", borderColor: "#f59e0b" },
   rejected: { backgroundColor: "#fee2e2", borderColor: "#fca5a5" },
   repair: { backgroundColor: "#ffedd5", borderColor: "#fdba74" },
-  overdue: { backgroundColor: "#fef5e7", borderColor: "#fcd34d" },
+  overdue: { backgroundColor: "#fee2e2", borderColor: "#ef4444" },
   completed: { backgroundColor: "#dcfce7", borderColor: "#86efac" },
 };
 

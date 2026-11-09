@@ -56,6 +56,7 @@ type WorkOrderStatus =
   | "For Verification"
   | "Overdue"
   | "Completed"
+  | "Cancelled"
   | "Done"
   | "Rejected"
   | "For Repair";
@@ -587,6 +588,8 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
                       ? "In Progress"
                       : schedule.status === "COMPLETED"
                         ? "Completed"
+                        : schedule.status === "CANCELLED"
+                          ? "Cancelled"
                         : "Overdue"),
               priority: schedule.priority ?? "MEDIUM",
               partsCost: schedule.partsCost,
@@ -1539,7 +1542,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
 
   const renderStatusBadge = (status: WorkOrderStatus) => (
     <View style={[styles.statusBadge, statusStyle(status)]}>
-      <Text style={styles.statusBadgeText}>{status}</Text>
+      <Text style={[styles.statusBadgeText, status === "Overdue" && styles.statusOverdueText]}>{status}</Text>
     </View>
   );
 
@@ -1836,10 +1839,12 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
     const startDateReached = isWorkOrderStartDateReached(selectedOrder.startDate);
     const mechanicOrderLocked =
       isMechanicRole &&
-      (selectedOrder.mechanicSubmitted ||
-        selectedOrder.approvalStatus === "Verified" ||
-        selectedOrder.status !== "In Progress") &&
-      selectedOrder.approvalStatus !== "Rejected";
+      (selectedOrder.status === "Cancelled" || (
+        (selectedOrder.mechanicSubmitted ||
+          selectedOrder.approvalStatus === "Verified" ||
+          selectedOrder.status !== "In Progress") &&
+        selectedOrder.approvalStatus !== "Rejected"
+      ));
     const executionReadOnly = isChiefMechanicRole || mechanicOrderLocked;
     const recordedParts = getChangedExecutionItems(selectedOrder.executionItems).flatMap((item) => {
       const entry = selectedOrder.partDetails[item.id];
@@ -2467,7 +2472,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
                 else handleCompleteOrder();
               } else handleInspectionAction();
             }}
-            disabled={savingAction || selectedOrder.status === "Completed" ||
+            disabled={savingAction || selectedOrder.status === "Completed" || selectedOrder.status === "Cancelled" ||
               (isChiefMechanicRole && (!selectedOrder.mechanicSubmitted || getAutomaticInspectionRemark(selectedOrder.inspectionItems) === "Unverified")) ||
               (isMechanicRole && selectedOrder.mechanicSubmitted) ||
               (isMechanicRole && canManuallyStart && !startDateReached)}
@@ -2840,6 +2845,7 @@ const styles = StyleSheet.create({
   statusOverdue: workOrderStatusColors.overdue,
   statusCompleted: workOrderStatusColors.completed,
   statusBadgeText: { fontSize: 11, fontWeight: "700", color: workOrderStatusTextColor },
+  statusOverdueText: { color: "#b91c1c" },
   priorityBadge: { alignSelf: "flex-start", borderRadius: 999, borderWidth: 1, paddingHorizontal: 10, paddingVertical: 4 },
   priorityHigh: { backgroundColor: "#fee2e2", borderColor: "#fca5a5" },
   priorityMedium: { backgroundColor: "#fef3c7", borderColor: "#fcd34d" },
