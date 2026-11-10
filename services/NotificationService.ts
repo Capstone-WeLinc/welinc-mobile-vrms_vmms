@@ -4,11 +4,23 @@ import { installMobileAuthRefresh } from "./mobileAuthRefresh";
 
 export interface MaintenanceNotification {
   id: string;
-  scheduleId: string;
-  kind: "CREATED" | "DUE" | "OVERDUE" | "ODOMETER_BUFFER";
+  scheduleId?: string;
+  kind: "CREATED" | "DUE" | "OVERDUE" | "ODOMETER_BUFFER" | "FUEL_ANOMALY";
   message: string;
   createdAt: string;
   readAt: string | null;
+  source: "maintenance" | "general";
+}
+
+export interface FuelAnomalyApproval {
+  id: string;
+  status: string;
+  severity: string;
+  efficiency: number;
+  rollingAverage: number;
+  note: string | null;
+  acknowledgedAt: string | null;
+  vehicle: { plateNumber: string };
 }
 
 const api = axios.create({
@@ -25,10 +37,35 @@ api.interceptors.request.use(async (config) => {
 });
 
 export async function getNotifications(): Promise<MaintenanceNotification[]> {
-  const response = await api.get<MaintenanceNotification[]>("/maintenance-schedules/notifications");
+  const [maintenanceResponse, generalResponse] = await Promise.all([
+    api.get<Array<Omit<MaintenanceNotification, "source"> & { scheduleId: string }>>("/maintenance-schedules/notifications"),
+    api.get<Array<{ id: string; title: string; message: string; type: string; isRead: boolean; createdAt: string }>>("/notifications"),
+  ]);
+  const maintenance = maintenanceResponse.data.map((item) => ({ ...item, source: "maintenance" as const }));
+  const general = generalResponse.data.filter((item) => /fuel.*anomaly|anomaly.*fuel/i.test(item.title)).map((item) => ({
+    id: item.id,
+    kind: "FUEL_ANOMALY" as const,
+    message: `${item.title}: ${item.message}`,
+    createdAt: item.createdAt,
+    readAt: item.isRead ? item.createdAt : null,
+    source: "general" as const,
+  }));
+  return [...maintenance, ...general].sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+}
+
+export async function markNotificationRead(id: string, source: MaintenanceNotification["source"]): Promise<void> {
+  if (source === "maintenance") {
+    await api.patch(`/maintenance-schedules/notifications/${encodeURIComponent(id)}/read`);
+    return;
+  }
+  await api.patch(`/notifications/${encodeURIComponent(id)}/read`);
+}
+
+export async function getFuelAnomalyApprovals(): Promise<FuelAnomalyApproval[]> {
+  const response = await api.get<FuelAnomalyApproval[]>("/fuel/anomalies");
   return response.data;
 }
 
-export async function markNotificationRead(id: string): Promise<void> {
-  await api.patch(`/maintenance-schedules/notifications/${encodeURIComponent(id)}/read`);
+export async function acknowledgeFuelAnomaly(id: string, remark?: string): Promise<void> {
+  await api.post(`/fuel/anomalies/${encodeURIComponent(id)}/acknowledge`, { remark });
 }

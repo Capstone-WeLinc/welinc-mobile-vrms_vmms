@@ -30,11 +30,13 @@ export function useNotifications(userId: string | undefined) {
     setLoading(false);
     if (!userId) return;
     void refresh();
+    const interval = setInterval(() => { void refresh(); }, 30_000);
+    return () => clearInterval(interval);
   }, [userId, refresh]);
-  const markRead = async (id: string) => {
+  const markRead = async (notification: MaintenanceNotification) => {
     try {
-      await markNotificationRead(id);
-      if (currentUser.current === userId) setNotifications((items) => items.map((item) => item.id === id ? { ...item, readAt: item.readAt ?? new Date().toISOString() } : item));
+      await markNotificationRead(notification.id, notification.source);
+      if (currentUser.current === userId) setNotifications((items) => items.map((item) => item.id === notification.id ? { ...item, readAt: item.readAt ?? new Date().toISOString() } : item));
     } catch {
       if (currentUser.current === userId) setError("Unable to mark notification as read. Please retry.");
     }

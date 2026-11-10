@@ -637,10 +637,12 @@ export default function App() {
         ) : activeScreen === "work-orders" ? (
           <WorkOrderScreen key={navigationReloadKey} accessRole={accessRole} user={user} initialOrderId={notificationOrderId} syncService={syncService} onLoadingChange={setIsPageRefreshing} />
         ) : activeScreen === "notifications" ? (
-          <NotificationsScreen key={navigationReloadKey} notifications={inbox.notifications} loading={inbox.loading} error={inbox.error} onRefresh={() => inbox.refresh()} onLoadingChange={setIsPageRefreshing} onOpen={(notification) => {
-            void inbox.markRead(notification.id);
-            setNotificationOrderId(notification.scheduleId);
-            setActiveScreen("work-orders");
+          <NotificationsScreen key={navigationReloadKey} notifications={inbox.notifications} loading={inbox.loading} error={inbox.error} onRefresh={() => inbox.refresh()} onLoadingChange={setIsPageRefreshing} accessRole={accessRole} onOpen={(notification) => {
+            void inbox.markRead(notification);
+            if (notification.source === "maintenance" && notification.scheduleId) {
+              setNotificationOrderId(notification.scheduleId);
+              setActiveScreen("work-orders");
+            }
           }} />
         ) : (
           <ScrollView
