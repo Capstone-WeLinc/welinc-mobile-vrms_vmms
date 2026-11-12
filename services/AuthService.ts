@@ -6,6 +6,8 @@ import {
   USER_KEY,
   installMobileAuthRefresh,
 } from "./mobileAuthRefresh";
+import { getMobileAccessRole } from "./mobileAccessRole";
+export { getMobileAccessRole } from "./mobileAccessRole";
 
 const DEFAULT_API_BASE_URL = "http://localhost:3000";
 
@@ -36,25 +38,7 @@ interface BackendUserSummary {
   status?: unknown;
 }
 
-export type MobileAccessRole = "mechanic" | "chiefMechanic" | "none";
-
-export function getMobileAccessRole(
-  roles: AuthenticatedUser["roles"] | undefined,
-): MobileAccessRole {
-  const normalizedRoles = (roles ?? []).map((role) =>
-    role.role.trim().toLowerCase(),
-  );
-
-  if (normalizedRoles.some((value) => value.includes("chief"))) {
-    return "chiefMechanic";
-  }
-
-  if (normalizedRoles.some((value) => value.includes("mechanic"))) {
-    return "mechanic";
-  }
-
-  return "none";
-}
+export type { MobileAccessRole } from "./mobileAccessRole";
 
 interface LoginResponse {
   accessToken: string;

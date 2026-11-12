@@ -3,6 +3,7 @@ import { workOrderStatusColors, workOrderStatusTextColor } from "./workOrderStat
 import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
 import { acknowledgeFuelAnomaly, getFuelAnomalyApprovals, type FuelAnomalyApproval, type MaintenanceNotification } from "../services/NotificationService";
 import { MobilePageHeader } from "../components/MobilePageHeader";
+import { getPendingCriticalFuelApprovals, shouldShowFuelAnomalyApprovalPanel } from "../services/fuelAnomalyApprovalVisibility";
 
 // Due and odometer reminders correspond to pending work orders in the mobile list.
 const notificationColors = {
@@ -30,9 +31,10 @@ export function NotificationsScreen({ notifications, loading, error, onRefresh, 
   const [fuelError, setFuelError] = useState<string | null>(null);
   const [remarks, setRemarks] = useState<Record<string, string>>({});
   const [acknowledging, setAcknowledging] = useState<string | null>(null);
+  const pendingFuelApprovals = getPendingCriticalFuelApprovals(accessRole, fuelAnomalies);
 
   const refreshFuelAnomalies = useCallback(async () => {
-    if (accessRole !== "chiefMechanic") return;
+    if (!shouldShowFuelAnomalyApprovalPanel(accessRole)) return;
     setFuelLoading(true);
     try {
       setFuelAnomalies(await getFuelAnomalyApprovals());
@@ -80,14 +82,14 @@ export function NotificationsScreen({ notifications, loading, error, onRefresh, 
   return (
     <ScrollView contentContainerStyle={styles.container} refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={() => void handlePullRefresh()} colors={["#1a1f6e", "#d4a93f"]} tintColor="#1a1f6e" progressBackgroundColor="#ffffff" />}>
       <MobilePageHeader title="Notifications" subtitle="Maintenance updates and alerts" />
-      {accessRole === "chiefMechanic" ? (
+      {shouldShowFuelAnomalyApprovalPanel(accessRole) ? (
         <View style={styles.approvalSection}>
           <Text style={styles.sectionTitle}>Critical Fuel Anomalies</Text>
           <Text style={styles.sectionDescription}>Review and acknowledge open fuel anomalies that have reached the 7-day critical stage.</Text>
           {fuelLoading ? <ActivityIndicator color="#1a1f6e" /> : null}
           {fuelError ? <Text accessibilityRole="alert" style={styles.error}>{fuelError}</Text> : null}
-          {!fuelLoading && !fuelError && !fuelAnomalies.some((item) => item.status === "OPEN" && item.severity === "CRITICAL" && !item.acknowledgedAt) ? <Text style={styles.emptyApproval}>No critical fuel approvals pending.</Text> : null}
-          {fuelAnomalies.filter((item) => item.status === "OPEN" && item.severity === "CRITICAL" && !item.acknowledgedAt).map((item) => (
+          {!fuelLoading && !fuelError && pendingFuelApprovals.length === 0 ? <Text style={styles.emptyApproval}>No critical fuel approvals pending.</Text> : null}
+          {pendingFuelApprovals.map((item) => (
             <View key={item.id} style={styles.approvalCard}>
               <Text style={styles.approvalTitle}>{item.vehicle.plateNumber} - Critical fuel anomaly</Text>
               <Text style={styles.approvalDetail}>{item.efficiency.toFixed(1)} km/L vs. {item.rollingAverage.toFixed(1)} km/L rolling average</Text>
