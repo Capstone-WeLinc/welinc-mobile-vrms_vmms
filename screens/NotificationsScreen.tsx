@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { workOrderStatusColors, workOrderStatusTextColor } from "./workOrderStatusColors";
 import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
 import { acknowledgeFuelAnomaly, getFuelAnomalyApprovals, type FuelAnomalyApproval, type MaintenanceNotification } from "../services/NotificationService";
@@ -29,27 +29,35 @@ export function NotificationsScreen({ notifications, loading, error, onRefresh, 
   const [fuelAnomalies, setFuelAnomalies] = useState<FuelAnomalyApproval[]>([]);
   const [fuelLoading, setFuelLoading] = useState(false);
   const [fuelError, setFuelError] = useState<string | null>(null);
+  const fuelRequestId = useRef(0);
   const [remarks, setRemarks] = useState<Record<string, string>>({});
-  const [acknowledging, setAcknowledging] = useState<string | null>(null);
+  const [acknowledging, setAcknowledging] = useState<Record<string, boolean>>({});
   const pendingFuelApprovals = getPendingCriticalFuelApprovals(accessRole, fuelAnomalies);
 
   const refreshFuelAnomalies = useCallback(async () => {
-    if (!shouldShowFuelAnomalyApprovalPanel(accessRole)) return;
+    const requestId = ++fuelRequestId.current;
+    if (!shouldShowFuelAnomalyApprovalPanel(accessRole)) {
+      setFuelLoading(false);
+      return;
+    }
     setFuelLoading(true);
     try {
-      setFuelAnomalies(await getFuelAnomalyApprovals());
+      const anomalies = await getFuelAnomalyApprovals();
+      if (requestId !== fuelRequestId.current) return;
+      setFuelAnomalies(anomalies);
       setFuelError(null);
     } catch (requestError) {
+      if (requestId !== fuelRequestId.current) return;
       setFuelError(requestError instanceof Error ? requestError.message : "Unable to load fuel approvals.");
     } finally {
-      setFuelLoading(false);
+      if (requestId === fuelRequestId.current) setFuelLoading(false);
     }
   }, [accessRole]);
 
   useEffect(() => { void refreshFuelAnomalies(); }, [refreshFuelAnomalies]);
 
   const acknowledge = async (anomalyId: string) => {
-    setAcknowledging(anomalyId);
+    setAcknowledging((current) => ({ ...current, [anomalyId]: true }));
     setFuelError(null);
     try {
       await acknowledgeFuelAnomaly(anomalyId, remarks[anomalyId]?.trim() || undefined);
@@ -59,7 +67,11 @@ export function NotificationsScreen({ notifications, loading, error, onRefresh, 
     } catch (requestError) {
       setFuelError(requestError instanceof Error ? requestError.message : "Unable to acknowledge this fuel anomaly.");
     } finally {
-      setAcknowledging(null);
+      setAcknowledging((current) => {
+        const next = { ...current };
+        delete next[anomalyId];
+        return next;
+      });
     }
   };
 
@@ -80,13 +92,13 @@ export function NotificationsScreen({ notifications, loading, error, onRefresh, 
     return () => onLoadingChange?.(false);
   }, [loading, onLoadingChange]);
   return (
-    <ScrollView contentContainerStyle={styles.container} refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={() => void handlePullRefresh()} colors={["#1a1f6e", "#d4a93f"]} tintColor="#1a1f6e" progressBackgroundColor="#ffffff" />}>
+    <ScrollView testID="notifications-scroll-view" contentContainerStyle={styles.container} refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={() => { void handlePullRefresh().catch(() => undefined); }} colors={["#1a1f6e", "#d4a93f"]} tintColor="#1a1f6e" progressBackgroundColor="#ffffff" />}>
       <MobilePageHeader title="Notifications" subtitle="Maintenance updates and alerts" />
       {shouldShowFuelAnomalyApprovalPanel(accessRole) ? (
         <View style={styles.approvalSection}>
           <Text style={styles.sectionTitle}>Critical Fuel Anomalies</Text>
           <Text style={styles.sectionDescription}>Review and acknowledge open fuel anomalies that have reached the 7-day critical stage.</Text>
-          {fuelLoading ? <ActivityIndicator color="#1a1f6e" /> : null}
+          {fuelLoading ? <ActivityIndicator accessible accessibilityLabel="Loading fuel approvals" accessibilityRole="progressbar" color="#1a1f6e" /> : null}
           {fuelError ? <Text accessibilityRole="alert" style={styles.error}>{fuelError}</Text> : null}
           {!fuelLoading && !fuelError && pendingFuelApprovals.length === 0 ? <Text style={styles.emptyApproval}>No critical fuel approvals pending.</Text> : null}
           {pendingFuelApprovals.map((item) => (
@@ -95,8 +107,8 @@ export function NotificationsScreen({ notifications, loading, error, onRefresh, 
               <Text style={styles.approvalDetail}>{item.efficiency.toFixed(1)} km/L vs. {item.rollingAverage.toFixed(1)} km/L rolling average</Text>
               <Text style={styles.approvalDetail}>{item.note?.trim() || "Operations has not added a resolution note."}</Text>
               <TextInput value={remarks[item.id] ?? ""} onChangeText={(value) => setRemarks((current) => ({ ...current, [item.id]: value }))} placeholder="Optional acknowledgment remark" style={styles.remarkInput} multiline />
-              <TouchableOpacity accessibilityRole="button" onPress={() => void acknowledge(item.id)} disabled={acknowledging === item.id} style={[styles.ackButton, acknowledging === item.id && styles.disabledButton]}>
-                <Text style={styles.ackButtonText}>{acknowledging === item.id ? "Saving..." : "Acknowledge anomaly"}</Text>
+              <TouchableOpacity accessibilityRole="button" onPress={() => void acknowledge(item.id)} disabled={Boolean(acknowledging[item.id])} style={[styles.ackButton, acknowledging[item.id] && styles.disabledButton]}>
+                <Text style={styles.ackButtonText}>{acknowledging[item.id] ? "Saving..." : "Acknowledge anomaly"}</Text>
               </TouchableOpacity>
             </View>
           ))}
