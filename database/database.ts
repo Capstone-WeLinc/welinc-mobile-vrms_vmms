@@ -16,15 +16,9 @@ import {
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
 async function openDatabase(): Promise<SQLite.SQLiteDatabase> {
-  try {
-    return await SQLite.openDatabaseAsync(DATABASE_NAME);
-  } catch (error) {
-    console.warn(
-      "[SQLite] openDatabaseAsync failed, falling back to openDatabaseSync",
-      error,
-    );
-    return SQLite.openDatabaseSync(DATABASE_NAME);
-  }
+  // Avoid Expo SQLite's shared per-name native handle cache. A second JS wrapper
+  // over that cached handle can invalidate the connection when garbage collected.
+  return SQLite.openDatabaseAsync(DATABASE_NAME, { useNewConnection: true });
 }
 
 async function execSqlStatements(
@@ -37,7 +31,15 @@ async function execSqlStatements(
     .filter(Boolean);
 
   for (const statement of statements) {
-    await db.execAsync(statement);
+    try {
+      await db.execAsync(statement);
+    } catch (error) {
+      console.error(
+        `[SQLite] SQL statement failed: ${statement.slice(0, 120).replace(/\s+/g, " ")}`,
+        error,
+      );
+      throw error;
+    }
   }
 }
 
@@ -234,7 +236,28 @@ async function migrateToV4(db: SQLite.SQLiteDatabase): Promise<void> {
 async function migrateToV5(db: SQLite.SQLiteDatabase): Promise<void> {
   await db.execAsync("PRAGMA foreign_keys = OFF");
   try {
-    await db.execAsync(`
+    const hasInterruptedTarget = await hasTable(db, "maintenance_schedules_v5");
+    if (hasInterruptedTarget) {
+      if (await hasTable(db, "maintenance_schedules")) {
+        // A failed copy leaves the source intact; discard the partial target and retry.
+        await db.execAsync("DROP TABLE maintenance_schedules_v5");
+      } else {
+        // The source was already dropped, so finish the interrupted table swap.
+        await db.execAsync(
+          "ALTER TABLE maintenance_schedules_v5 RENAME TO maintenance_schedules",
+        );
+        await execSqlStatements(db, `
+          CREATE INDEX IF NOT EXISTS idx_maintenance_vehicleId ON maintenance_schedules(vehicleId);
+          CREATE INDEX IF NOT EXISTS idx_maintenance_checklistTemplateId ON maintenance_schedules(checklistTemplateId);
+          CREATE INDEX IF NOT EXISTS idx_maintenance_updatedAt ON maintenance_schedules(updatedAt);
+          CREATE INDEX IF NOT EXISTS idx_maintenance_deletedAt ON maintenance_schedules(deletedAt);
+          CREATE INDEX IF NOT EXISTS idx_maintenance_status ON maintenance_schedules(status);
+        `);
+        return;
+      }
+    }
+
+    await execSqlStatements(db, `
       CREATE TABLE maintenance_schedules_v5 (
         id TEXT PRIMARY KEY NOT NULL,
         vehicleId TEXT NOT NULL,
@@ -271,7 +294,8 @@ async function migrateToV5(db: SQLite.SQLiteDatabase): Promise<void> {
           assignedMechanicId, chiefMechanicId, accountType, checklistTemplateId,
           odometerReading, triggerType, intervalKm, bufferDistanceKm,
           startingReferenceReadingKm, intervalType, startReferenceDate,
-          previousScheduleId, workOrderProgress, deletedAt, createdAt, updatedAt
+          previousScheduleId, partsCost, laborCost, totalCost, workOrderProgress,
+          deletedAt, createdAt, updatedAt
         FROM maintenance_schedules;
       DROP TABLE maintenance_schedules;
       ALTER TABLE maintenance_schedules_v5 RENAME TO maintenance_schedules;
