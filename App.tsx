@@ -33,7 +33,6 @@ import { WorkOrderScreen } from "./screens/WorkOrderScreen";
 import {
   API_BASE_URL,
   AuthService,
-  getMobileAccessRole,
   type AuthenticatedUser,
 } from "./services/AuthService";
 import { isValidPhoneNumber, normalizePhoneNumber } from "./services/phoneNumber";
@@ -497,20 +496,8 @@ export default function App() {
       );
     }
 
-    const accessRole = getMobileAccessRole(user.roles);
-    if (accessRole === "none") {
-      return (
-        <View style={styles.centered}>
-          <Text style={styles.error}>
-            Only mechanics and chief mechanics can use this mobile version.
-          </Text>
-          <TouchableOpacity
-            style={styles.logoutButton}
-            onPress={() => void logout()}
-          />
-        </View>
-      );
-    }
+    const vmmsRole = user.roles.find((item) => item.system === "VMMS")?.role;
+    const accessRole = vmmsRole === "CHIEF_MECHANIC" ? "chiefMechanic" : "mechanic";
 
     const tabItems: Array<{
       key: "dashboard" | "work-orders" | "notifications" | "profile";

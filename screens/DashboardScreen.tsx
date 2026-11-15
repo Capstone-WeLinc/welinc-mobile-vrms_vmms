@@ -9,7 +9,7 @@ import {
 
 import { getMaintenanceSchedules } from "../database/database";
 import type { MaintenanceSchedule } from "../database/tables";
-import { getMobileAccessRole, type AuthenticatedUser } from "../services/AuthService";
+import type { AuthenticatedUser } from "../services/AuthService";
 import { SyncService, type SyncResult } from "../services/SyncService";
 import { MobilePageHeader } from "../components/MobilePageHeader";
 
@@ -102,7 +102,8 @@ export function DashboardScreen({
     "starting" | "online" | "offline" | "error"
   >("starting");
   const [error, setError] = useState<string | null>(null);
-  const accessRole = getMobileAccessRole(user.roles);
+  const role = user.roles.find((item) => item.system === "VMMS")?.role;
+  const accessRole = role === "CHIEF_MECHANIC" ? "chiefMechanic" : "mechanic";
   const isChiefMechanic = accessRole === "chiefMechanic";
   const canViewPerformance = isChiefMechanic || accessRole === "mechanic";
   const mechanicPerformance = canViewPerformance ? summarizeMechanicWork(schedules) : [];

@@ -26,7 +26,7 @@ export interface FuelAnomalyApproval {
 const api = axios.create({
   baseURL: API_BASE_URL,
   timeout: 15000,
-  headers: { "X-VMMS-Client": "mobile" },
+  headers: {},
 });
 installMobileAuthRefresh(api, API_BASE_URL);
 api.interceptors.request.use(async (config) => {

@@ -121,7 +121,7 @@ export class SyncService {
     this.api = axios.create({
       baseURL: apiBaseUrl,
       timeout: options.requestTimeoutMs ?? 15_000,
-      headers: { Accept: "application/json", "X-VMMS-Client": "mobile" },
+      headers: { Accept: "application/json" },
     });
     installMobileAuthRefresh(this.api, apiBaseUrl);
     this.getAccessToken = options.getAccessToken;

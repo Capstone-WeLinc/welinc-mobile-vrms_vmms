@@ -8,9 +8,10 @@ offline. `SyncService` pulls authenticated snapshots from the existing endpoints
 - `GET /maintenance-schedules`
 - `GET /checklists`
 
-Authentication and synchronization are wired into `App.tsx`. The app posts to
-`/auth/login`, stores the JWT in Expo SecureStore, restores valid sessions, and
-starts synchronization while the authenticated dashboard is mounted. The core
+Authentication and synchronization are wired into `App.tsx`. The app signs in
+through welinc-auth's mobile login route, stores the rotating refresh token and
+access token in Expo SecureStore, restores valid sessions, and starts
+synchronization while the authenticated dashboard is mounted. The core
 integration is equivalent to:
 
 ```ts

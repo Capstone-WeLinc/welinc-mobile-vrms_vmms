@@ -51,7 +51,6 @@ test("uses the backend fuel approval contract to fetch and acknowledge as mobile
   expect(await getFuelAnomalyApprovals()).toEqual([approval]);
   expect(mockAxiosCreate).toHaveBeenCalledWith(expect.objectContaining({
     baseURL: "https://vmms.example.test/api",
-    headers: expect.objectContaining({ "X-VMMS-Client": "mobile" }),
   }));
   expect(mockApiClient.get).toHaveBeenCalledWith("/fuel/anomalies");
 

@@ -53,9 +53,7 @@ export interface WorkOrderSummaryResponse {
   topMaintenanceTypes?: Array<Record<string, unknown>>;
 }
 
-export const ANALYTICS_API_BASE_URL =
-  process.env.EXPO_PUBLIC_ANALYTICS_API_BASE_URL?.trim().replace(/\/$/, "") ||
-  API_BASE_URL.replace(/:\d+$/, ":3001");
+export const ANALYTICS_API_BASE_URL = API_BASE_URL;
 
 export class WorkOrderAnalyticsService {
   private readonly api: AxiosInstance;
@@ -68,7 +66,6 @@ export class WorkOrderAnalyticsService {
       headers: {
         Accept: "application/json",
         "Content-Type": "application/json",
-        "X-VMMS-Client": "mobile",
       },
     });
 
@@ -78,7 +75,6 @@ export class WorkOrderAnalyticsService {
       headers: {
         Accept: "application/json",
         "Content-Type": "application/json",
-        "X-VMMS-Client": "mobile",
       },
     });
     installMobileAuthRefresh(this.api, API_BASE_URL);
