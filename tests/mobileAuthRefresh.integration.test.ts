@@ -17,6 +17,8 @@ jest.mock("axios", () => ({
 
 jest.mock("expo-secure-store", () => mockSecureStore);
 
+// Import after registering mocks so the service receives the mocked clients.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 const { installMobileAuthRefresh } = require("../services/mobileAuthRefresh");
 
 beforeEach(() => {

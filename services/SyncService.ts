@@ -1,7 +1,7 @@
 import NetInfo, {
   type NetInfoSubscription,
 } from "@react-native-community/netinfo";
-import axios, { type AxiosInstance, type AxiosRequestHeaders } from "axios";
+import { create as createAxios, isAxiosError, type AxiosInstance, type AxiosRequestHeaders } from "axios";
 import { installMobileAuthRefresh } from "./mobileAuthRefresh";
 import { resolveCreatedDate } from "./workOrderDates";
 
@@ -118,7 +118,7 @@ export class SyncService {
     if (!apiBaseUrl)
       throw new Error("SyncService requires a non-empty API base URL");
 
-    this.api = axios.create({
+    this.api = createAxios({
       baseURL: apiBaseUrl,
       timeout: options.requestTimeoutMs ?? 15_000,
       headers: { Accept: "application/json" },
@@ -262,7 +262,7 @@ export class SyncService {
         checklistItems: items.length,
       };
     } catch (error) {
-      if (axios.isAxiosError(error) && error.response?.status === 401) {
+      if (isAxiosError(error) && error.response?.status === 401) {
         await this.onUnauthorized?.();
         console.info(
           "[Sync] Session expired or unauthorized; using local SQLite cache",
@@ -971,7 +971,7 @@ function validTimestampOrFallback(value: unknown, fallback: string): string {
 }
 
 function getSyncErrorMessage(error: unknown): string {
-  if (axios.isAxiosError(error)) {
+  if (isAxiosError(error)) {
     if (error.response)
       return `API request failed with status ${error.response.status}`;
     if (error.code === "ECONNABORTED") return "API request timed out";

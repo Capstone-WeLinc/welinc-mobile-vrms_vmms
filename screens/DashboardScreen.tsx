@@ -67,7 +67,7 @@ function summarizeMechanicWork(schedules: MaintenanceSchedule[]): MechanicPerfor
         checklistItemsTotal: 0,
       };
       const status = getScheduleWorkflowStatus(schedule, progress);
-      const items = Array.isArray(progress.executionItems) ? progress.executionItems as Array<{ status?: unknown }> : [];
+      const items = Array.isArray(progress.executionItems) ? progress.executionItems as { status?: unknown }[] : [];
       summary.totalOrders += 1;
       summary.checklistItemsTotal += items.length;
       summary.checklistItemsDone += items.filter((item) => item.status === "checked" || item.status === "changed").length;
@@ -147,6 +147,8 @@ export function DashboardScreen({
   }, [applySyncResult, loadCache, onLoadingChange, syncService]);
 
   useEffect(() => {
+    // Show cached data immediately while the sync request runs.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void loadCache();
     const unsubscribeSync = syncService.subscribe(
       (result) => void applySyncResult(result),

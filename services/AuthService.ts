@@ -1,4 +1,4 @@
-import axios, { type AxiosInstance } from "axios";
+import { create as createAxios, isAxiosError, type AxiosInstance } from "axios";
 import * as SecureStore from "expo-secure-store";
 import {
   ACCESS_TOKEN_KEY,
@@ -22,13 +22,15 @@ export interface AuthenticatedUser {
   email: string;
   contact: string | null;
   profilePicture: string | null;
-  roles: Array<{ role: string; system: string }>;
+  roles: { role: string; system: string }[];
 }
+
+export type MobileAccessRole = "mechanic" | "chiefMechanic";
 
 export interface MobileUserSummary {
   id: string;
   name: string;
-  roles: Array<{ role: string; system: string }>;
+  roles: { role: string; system: string }[];
   temporaryRoles?: string[];
 }
 
@@ -60,7 +62,7 @@ export class AuthService {
   private readonly api: AxiosInstance;
 
   constructor(apiBaseUrl: string = API_BASE_URL) {
-    this.api = axios.create({
+    this.api = createAxios({
       baseURL: apiBaseUrl,
       timeout: 15_000,
       headers: {
@@ -79,7 +81,7 @@ export class AuthService {
         clientId: MOBILE_CLIENT_ID,
         deviceName: `${Platform.OS} device`,
       });
-      if (response.data.status === "EMAIL_VERIFICATION_REQUIRED") return response.data;
+      if ("challengeId" in response.data) return response.data;
       await this.storeMobileSession(response.data);
       return response.data.user;
     } catch (error) {
@@ -148,7 +150,7 @@ export class AuthService {
       await refreshAccessToken(API_BASE_URL);
       return storedUser;
     } catch (error) {
-      if (axios.isAxiosError(error) && error.response) {
+      if (isAxiosError(error) && error.response) {
         if (error.response.status === 401 || error.response.status === 403) {
           await this.clearSession();
           return null;
@@ -236,7 +238,7 @@ export class AuthService {
           role.system === "VMMS" && role.role === "CHIEF_MECHANIC" &&
           !(candidate as MobileUserSummary & { temporaryRoles?: string[] }).temporaryRoles?.includes(role.role)));
     } catch (error) {
-      if (axios.isAxiosError(error) && error.response?.status === 401) {
+      if (isAxiosError(error) && error.response?.status === 401) {
         return [];
       }
       console.warn("[Auth] Chief mechanic account lookup failed", error);
@@ -348,7 +350,7 @@ function toMobileUserSummary(value: unknown): MobileUserSummary | null {
 }
 
 function getAuthErrorMessage(error: unknown): string {
-  if (!axios.isAxiosError(error)) {
+  if (!isAxiosError(error)) {
     return error instanceof Error ? error.message : "Unable to sign in";
   }
   if (!error.response) {

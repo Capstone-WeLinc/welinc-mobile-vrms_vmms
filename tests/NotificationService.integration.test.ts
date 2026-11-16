@@ -25,6 +25,8 @@ jest.mock("../services/mobileAuthRefresh", () => ({
   installMobileAuthRefresh: jest.fn(),
 }));
 
+// Import after registering mocks so the service receives the mocked clients.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 const { acknowledgeFuelAnomaly, getFuelAnomalyApprovals } = require("../services/NotificationService");
 
 const approval = {

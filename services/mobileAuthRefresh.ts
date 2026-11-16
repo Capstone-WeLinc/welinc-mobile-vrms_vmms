@@ -1,4 +1,4 @@
-import axios, { type AxiosInstance, type InternalAxiosRequestConfig } from 'axios';
+import axios, { isAxiosError, type AxiosInstance, type InternalAxiosRequestConfig } from 'axios';
 import * as SecureStore from 'expo-secure-store';
 
 export const ACCESS_TOKEN_KEY = 'vmms_access_token';
@@ -67,7 +67,7 @@ export function installMobileAuthRefresh(api: AxiosInstance, apiBaseUrl: string)
   api.interceptors.response.use(
     (response) => response,
     async (error: unknown) => {
-      if (!axios.isAxiosError(error)) return Promise.reject(error);
+      if (!isAxiosError(error)) return Promise.reject(error);
       const config = error.config as RefreshableRequest | undefined;
       if (error.response?.status !== 401 || !config || config._vmmsRefreshRetried || isAuthRoute(config.url)) {
         return Promise.reject(error);

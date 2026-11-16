@@ -42,7 +42,7 @@ export function LoginScreen({ authService, onAuthenticated, onBack }: LoginScree
     setError(null);
     try {
       const result = await authService.login(email, password);
-      if ("status" in result && result.status === "EMAIL_VERIFICATION_REQUIRED") {
+      if ("challengeId" in result) {
         setChallenge(result);
       } else {
         onAuthenticated(result);

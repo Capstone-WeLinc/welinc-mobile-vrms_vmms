@@ -1,6 +1,5 @@
 import { StatusBar } from "expo-status-bar";
-import * as SQLite from "expo-sqlite";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import type { ReactElement } from "react";
 import {
   Animated,
@@ -17,11 +16,10 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import Svg, { Circle, Path, Rect } from "react-native-svg";
+import Svg, { Circle, Path } from "react-native-svg";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 
 import { clearDatabase, initializeDatabase } from "./database/database";
-import { DATABASE_NAME } from "./database/tables";
 import { DashboardScreen } from "./screens/DashboardScreen";
 import { MobilePageHeader } from "./components/MobilePageHeader";
 import { LoginScreen } from "./screens/LoginScreen";
@@ -42,7 +40,7 @@ const authService = new AuthService(API_BASE_URL);
 const welinc = require("./assets/welinc_logo.jpg");
 
 function NavbarRefreshLine({ visible }: { visible: boolean }) {
-  const progress = useRef(new Animated.Value(0)).current;
+  const [progress] = useState(() => new Animated.Value(0));
   useEffect(() => {
     if (!visible) {
       progress.setValue(0);
@@ -259,6 +257,8 @@ export default function App() {
     if (!user) return;
 
     const nameParts = user.name.trim().split(/\s+/);
+    // Keep the profile edit form in sync when the authenticated user changes.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setProfileForm({
       firstName: nameParts[0] ?? "",
       lastName: nameParts.slice(1).join(" "),
@@ -272,14 +272,6 @@ export default function App() {
     Promise.all([initializeDatabase(), authService.restoreSession()])
       .then(async ([, restoredUser]) => {
         if (!mounted) return;
-
-        if (restoredUser) {
-          try {
-            await syncService.forceRefreshFromBackend();
-          } catch (error) {
-            console.warn("[App] Forced backend refresh failed", error);
-          }
-        }
 
         setUser(restoredUser);
         if (restoredUser) {
@@ -397,8 +389,6 @@ export default function App() {
         newPassword: passwordForm.next,
         confirmPassword: passwordForm.confirm,
       });
-      const updatedUser = await authService.login(user.email, passwordForm.next);
-      setUser(updatedUser);
       setPasswordForm({ current: "", next: "", confirm: "" });
       setPasswordMessage("Password updated successfully.");
     } catch (error) {
@@ -499,10 +489,10 @@ export default function App() {
     const vmmsRole = user.roles.find((item) => item.system === "VMMS")?.role;
     const accessRole = vmmsRole === "CHIEF_MECHANIC" ? "chiefMechanic" : "mechanic";
 
-    const tabItems: Array<{
+    const tabItems: {
       key: "dashboard" | "work-orders" | "notifications" | "profile";
       Icon: (props: { active: boolean }) => ReactElement;
-    }> = [
+    }[] = [
       { key: "dashboard", Icon: DashboardTabIcon },
       { key: "work-orders", Icon: WorkOrderTabIcon },
       { key: "notifications", Icon: ({ active }: { active: boolean }) => <NotificationTabIcon active={active} count={inbox.unreadCount} /> },
