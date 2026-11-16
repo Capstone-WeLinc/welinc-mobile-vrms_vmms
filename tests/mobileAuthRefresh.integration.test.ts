@@ -9,6 +9,7 @@ let mockRejectedResponseHandler: ((error: unknown) => Promise<unknown>) | undefi
 
 jest.mock("axios", () => ({
   __esModule: true,
+  isAxiosError: mockIsAxiosError,
   default: {
     post: mockAxiosPost,
     isAxiosError: mockIsAxiosError,
@@ -262,7 +263,3 @@ test.each(["/auth/mobile/login", "/auth/token", "/auth/logout"])("does not recur
   expect(mockSecureStore.deleteItemAsync).not.toHaveBeenCalled();
   expect(mockApi.request).not.toHaveBeenCalled();
 });
-
-
-
-

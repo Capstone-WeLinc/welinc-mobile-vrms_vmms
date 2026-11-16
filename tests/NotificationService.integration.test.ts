@@ -11,6 +11,7 @@ const mockAxiosCreate = jest.fn(() => mockApiClient);
 
 jest.mock("axios", () => ({
   __esModule: true,
+  create: mockAxiosCreate,
   default: { create: mockAxiosCreate },
 }));
 
