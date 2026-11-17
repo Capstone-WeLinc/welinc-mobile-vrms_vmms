@@ -18,12 +18,13 @@ interface LoginScreenProps {
   authService: AuthService;
   onAuthenticated: (user: AuthenticatedUser) => void;
   onBack: () => void;
+  onForgotPassword: () => void;
 }
 
 const welincLogo = require("../assets/welinc_logo.jpg");
 const movingTrucks = require("../assets/trucks_moving.gif");
 
-export function LoginScreen({ authService, onAuthenticated, onBack }: LoginScreenProps) {
+export function LoginScreen({ authService, onAuthenticated, onBack, onForgotPassword }: LoginScreenProps) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -151,7 +152,13 @@ export function LoginScreen({ authService, onAuthenticated, onBack }: LoginScree
 
           <View style={styles.passwordLabelRow}>
             <Text style={styles.label}>Password <Text style={styles.required}>*</Text></Text>
-            <Text style={styles.forgotPassword}>Forgot password?</Text>
+            <TouchableOpacity
+              accessibilityRole="button"
+              onPress={onForgotPassword}
+              style={styles.forgotPasswordButton}
+            >
+              <Text style={styles.forgotPassword}>Forgot password?</Text>
+            </TouchableOpacity>
           </View>
           <View style={styles.passwordRow}>
             <TextInput
@@ -224,6 +231,7 @@ const styles = StyleSheet.create({
   required: { color: "#f4c400" },
   input: { height: 46, borderRadius: 12, backgroundColor: "#eaf0ff", color: "#14192d", paddingHorizontal: 15, fontSize: 14, marginBottom: 14 },
   passwordLabelRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  forgotPasswordButton: { paddingVertical: 6 },
   forgotPassword: { color: "#f4c400", fontSize: 12, fontWeight: "600", marginBottom: 8 },
   passwordRow: { flexDirection: "row", alignItems: "center" },
   passwordInput: { flex: 1, paddingRight: 54 },

@@ -113,6 +113,49 @@ export class AuthService {
     }
   }
 
+  async requestPasswordReset(email: string): Promise<void> {
+    try {
+      await this.api.post("/auth/forgot-password", {
+        email: email.trim().toLowerCase(),
+      });
+    } catch (error) {
+      throw new Error(
+        getAuthErrorMessage(error, "Unable to request a password reset.", "Password reset request"),
+      );
+    }
+  }
+
+  async verifyPasswordResetCode(email: string, otp: string): Promise<void> {
+    try {
+      await this.api.post("/auth/verify-otp", {
+        email: email.trim().toLowerCase(),
+        otp: otp.trim(),
+      });
+    } catch (error) {
+      throw new Error(
+        getAuthErrorMessage(error, "Unable to verify the reset code.", "Code verification"),
+      );
+    }
+  }
+
+  async resetPassword(input: {
+    email: string;
+    otp: string;
+    newPassword: string;
+  }): Promise<void> {
+    try {
+      await this.api.post("/auth/reset-password", {
+        email: input.email.trim().toLowerCase(),
+        otp: input.otp.trim(),
+        newPassword: input.newPassword,
+      });
+    } catch (error) {
+      throw new Error(
+        getAuthErrorMessage(error, "Unable to reset the password.", "Password reset"),
+      );
+    }
+  }
+
   private async storeMobileSession(answer: LoginResponse): Promise<void> {
     const { accessToken, refreshToken, user } = answer;
     if (!accessToken || !refreshToken || !isAuthenticatedUser(user)) {
@@ -349,9 +392,13 @@ function toMobileUserSummary(value: unknown): MobileUserSummary | null {
   return typeof id === "string" ? { id, name: candidate.name, roles, temporaryRoles } : null;
 }
 
-function getAuthErrorMessage(error: unknown): string {
+function getAuthErrorMessage(
+  error: unknown,
+  fallback = "Unable to sign in",
+  operation = "Login",
+): string {
   if (!isAxiosError(error)) {
-    return error instanceof Error ? error.message : "Unable to sign in";
+    return error instanceof Error ? error.message : fallback;
   }
   if (!error.response) {
     return error.code === "ECONNABORTED"
@@ -366,5 +413,5 @@ function getAuthErrorMessage(error: unknown): string {
     if (Array.isArray(message))
       return message.filter((item) => typeof item === "string").join("\n");
   }
-  return `Login failed with status ${error.response.status}.`;
+  return `${operation} failed with status ${error.response.status}.`;
 }

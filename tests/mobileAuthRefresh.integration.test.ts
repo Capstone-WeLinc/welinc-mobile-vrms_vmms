@@ -239,7 +239,14 @@ test("does not refresh credentials for a non-401 response", async () => {
   expect(mockApi.request).not.toHaveBeenCalled();
 });
 
-test.each(["/auth/mobile/login", "/auth/token", "/auth/logout"])("does not recursively refresh a 401 from %s", async (url) => {
+test.each([
+  "/auth/mobile/login",
+  "/auth/forgot-password",
+  "/auth/verify-otp",
+  "/auth/reset-password",
+  "/auth/token",
+  "/auth/logout",
+])("does not recursively refresh a 401 from %s", async (url) => {
   mockIsAxiosError.mockReturnValue(true);
   const mockApi = {
     interceptors: {

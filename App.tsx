@@ -23,6 +23,7 @@ import { clearDatabase, initializeDatabase } from "./database/database";
 import { DashboardScreen } from "./screens/DashboardScreen";
 import { MobilePageHeader } from "./components/MobilePageHeader";
 import { LoginScreen } from "./screens/LoginScreen";
+import { ForgotPasswordScreen } from "./screens/ForgotPasswordScreen";
 import { SplashScreen } from "./screens/SplashScreen";
 import { PhoneNumberField } from "./screens/PhoneNumberField";
 import { NotificationsScreen } from "./screens/NotificationsScreen";
@@ -238,6 +239,7 @@ export default function App() {
     confirm: "",
   });
   const [showSplash, setShowSplash] = useState(true);
+  const [showForgotPassword, setShowForgotPassword] = useState(false);
   const [isPageRefreshing, setIsPageRefreshing] = useState(false);
   const [profileRefreshing, setProfileRefreshing] = useState(false);
   const [profilePullRefreshing, setProfilePullRefreshing] = useState(false);
@@ -477,11 +479,21 @@ export default function App() {
     }
 
     if (!user) {
+      if (showForgotPassword) {
+        return (
+          <ForgotPasswordScreen
+            authService={authService}
+            onBack={() => setShowForgotPassword(false)}
+          />
+        );
+      }
+
       return (
         <LoginScreen
           authService={authService}
           onAuthenticated={setUser}
           onBack={() => setShowSplash(true)}
+          onForgotPassword={() => setShowForgotPassword(true)}
         />
       );
     }

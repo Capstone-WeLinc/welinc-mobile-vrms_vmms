@@ -42,6 +42,9 @@ export async function refreshAccessToken(apiBaseUrl: string): Promise<string> {
 function isAuthRoute(url?: string) {
   return Boolean(url && (
     url.includes('/auth/mobile/login') ||
+    url.includes('/auth/forgot-password') ||
+    url.includes('/auth/verify-otp') ||
+    url.includes('/auth/reset-password') ||
     url.includes('/auth/token') ||
     url.includes('/auth/logout')
   ));
