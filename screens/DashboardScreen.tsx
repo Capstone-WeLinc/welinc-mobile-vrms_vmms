@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import {
+  Pressable,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -12,6 +13,10 @@ import type { MaintenanceSchedule } from "../database/tables";
 import type { AuthenticatedUser } from "../services/AuthService";
 import { SyncService, type SyncResult } from "../services/SyncService";
 import { MobilePageHeader } from "../components/MobilePageHeader";
+import type {
+  DashboardWorkOrderFilter,
+  DashboardWorkOrderStatus,
+} from "./workOrderDashboardFilter";
 
 type MechanicPerformanceSummary = {
   key: string;
@@ -87,6 +92,7 @@ interface DashboardScreenProps {
   syncService: SyncService;
   onLogout: () => Promise<void>;
   onLoadingChange?: (loading: boolean) => void;
+  onOpenWorkOrders: (filter: DashboardWorkOrderFilter) => void;
 }
 
 export function DashboardScreen({
@@ -94,6 +100,7 @@ export function DashboardScreen({
   syncService,
   onLogout,
   onLoadingChange,
+  onOpenWorkOrders,
 }: DashboardScreenProps) {
   const [schedules, setSchedules] = useState<MaintenanceSchedule[]>([]);
   const [pullRefreshing, setPullRefreshing] = useState(false);
@@ -173,7 +180,7 @@ export function DashboardScreen({
       }
     >
       <View style={styles.header}>
-        <MobilePageHeader title="Vehicle Maintenance" subtitle={`Signed in as ${user.name}`} />
+        <MobilePageHeader title="Dashboard" subtitle="Maintenance overview" />
 
         <View
           style={[styles.status, syncState === "error" && styles.statusError]}
@@ -197,7 +204,7 @@ export function DashboardScreen({
 
         {canViewPerformance ? (
             <View style={styles.performanceSection}>
-              <Text style={styles.sectionTitle}>{isChiefMechanic ? "Mechanic Performance" : "My Performance"}</Text>
+              <Text style={styles.sectionTitle}>{isChiefMechanic ? "Mechanic Performance" : "Work Order Overview"}</Text>
               <Text style={styles.performanceSubtitle}>
                 {isChiefMechanic
                   ? "Progress for Mechanics assigned to your schedules."
@@ -218,18 +225,33 @@ export function DashboardScreen({
                       <Text style={styles.performanceOrderCount}>{summary.totalOrders} work orders</Text>
                     </View>
                     <View style={styles.performanceMetrics}>
-                      {[
+                      {([
                         { label: "Pending", value: summary.pending },
                         { label: "In Progress", value: summary.inProgress },
                         { label: "Overdue", value: summary.overdue },
                         { label: "Awaiting Review", value: summary.awaitingReview },
                         { label: "Completed", value: summary.completed },
                         { label: "Returned", value: summary.returned },
-                      ].map((metric) => (
-                        <View key={metric.label} style={styles.performanceMetric}>
+                      ] as { label: DashboardWorkOrderStatus; value: number }[]).map((metric) => (
+                        <Pressable
+                          key={metric.label}
+                          accessibilityRole="button"
+                          accessibilityLabel={`Open ${metric.label} work orders, ${metric.value} total`}
+                          onPress={() =>
+                            onOpenWorkOrders({
+                              status: metric.label,
+                              mechanicId: isChiefMechanic ? summary.key : null,
+                              mechanicName: isChiefMechanic ? summary.mechanic : null,
+                            })
+                          }
+                          style={({ pressed }) => [
+                            styles.performanceMetric,
+                            pressed && styles.performanceMetricPressed,
+                          ]}
+                        >
                           <Text style={styles.performanceMetricValue}>{metric.value}</Text>
                           <Text style={styles.performanceMetricLabel}>{metric.label}</Text>
-                        </View>
+                        </Pressable>
                       ))}
                     </View>
                     <View style={styles.performanceChecklistRow}>
@@ -284,6 +306,7 @@ const styles = StyleSheet.create({
   performanceOrderCount: { color: "#64748b", fontSize: 11, fontWeight: "700" },
   performanceMetrics: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   performanceMetric: { width: "48%", backgroundColor: "#f8fafc", borderRadius: 8, padding: 8 },
+  performanceMetricPressed: { opacity: 0.72 },
   performanceMetricValue: { color: "#0f172a", fontWeight: "800", fontSize: 16 },
   performanceMetricLabel: { color: "#64748b", fontSize: 10, fontWeight: "700" },
   performanceChecklistRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },

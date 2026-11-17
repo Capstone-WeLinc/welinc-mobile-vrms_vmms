@@ -10,6 +10,12 @@ import {
 import { isWorkOrderStartDateReached } from "./workOrderStartDate";
 import { getPersistedWorkOrderNumber } from "./workOrderId";
 import { isAwaitingChiefReview, submittedReviewState } from "./workOrderReview";
+import { sortWorkOrdersForQueue } from "./workOrderPriority";
+import {
+  dashboardWorkOrderStatuses,
+  matchesWorkOrderDashboardFilter,
+  type DashboardWorkOrderFilter,
+} from "./workOrderDashboardFilter";
 import { formatWorkOrderDate as formatReadableDate } from "../services/workOrderDates";
 import { MobilePageHeader } from "../components/MobilePageHeader";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -461,11 +467,12 @@ interface WorkOrderScreenProps {
   accessRole: MobileAccessRole;
   user: AuthenticatedUser;
   initialOrderId?: string | null;
+  initialDashboardFilter?: DashboardWorkOrderFilter | null;
   syncService?: SyncService;
   onLoadingChange?: (loading: boolean) => void;
 }
 
-export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService, onLoadingChange }: WorkOrderScreenProps) {
+export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashboardFilter, syncService, onLoadingChange }: WorkOrderScreenProps) {
   const saveQueue = useRef<Promise<unknown>>(Promise.resolve());
   const localSaveQueue = useRef<Promise<unknown>>(Promise.resolve());
   const syncWarningShown = useRef(false);
@@ -479,7 +486,15 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
   const [searchQuery, setSearchQuery] = useState("");
   const [showFilters, setShowFilters] = useState(false);
   const [openFilterMenu, setOpenFilterMenu] = useState<"status" | "type" | "priority" | null>(null);
-  const [statusFilter, setStatusFilter] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState<string | null>(
+    initialDashboardFilter?.status ?? null,
+  );
+  const [mechanicFilterId, setMechanicFilterId] = useState<string | null>(
+    initialDashboardFilter?.mechanicId ?? null,
+  );
+  const [mechanicFilterName, setMechanicFilterName] = useState<string | null>(
+    initialDashboardFilter?.mechanicName ?? null,
+  );
   const [typeFilter, setTypeFilter] = useState<string | null>(null);
   const [priorityFilter, setPriorityFilter] = useState<string | null>(null);
   const [chiefQueueMode, setChiefQueueMode] = useState<"monitoring" | "review">("monitoring");
@@ -1047,26 +1062,37 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
     : accessRole === "chiefMechanic"
       ? chiefQueueMode === "review" ? chiefReviewOrders : chiefSupervisedOrders
       : [];
-  const statusOptions = [...new Set(visibleOrders.map((order) => order.status))].sort();
+  const statusOptions = [
+    ...new Set([
+      ...visibleOrders.map((order) => order.status),
+      ...dashboardWorkOrderStatuses,
+    ]),
+  ].sort();
   const typeOptions = [...new Set(visibleOrders.map((order) => order.maintenanceType))].sort();
   const priorityOptions = ["HIGH", "MEDIUM", "LOW"];
-  const filtersActive = Boolean(searchQuery.trim() || statusFilter || typeFilter || priorityFilter);
-  const clearFilters = () => { setSearchQuery(""); setStatusFilter(null); setTypeFilter(null); setPriorityFilter(null); };
-  const filteredOrders = visibleOrders.filter((order) => {
-    const query = searchQuery.trim().toLowerCase();
-    const matchesQuery =
-      order.number.toLowerCase().includes(query) ||
-      order.plate.toLowerCase().includes(query) ||
-      order.maintenanceType.toLowerCase().includes(query) ||
-      order.mechanic.toLowerCase().includes(query) ||
-      order.chiefMechanic.toLowerCase().includes(query);
+  const filtersActive = Boolean(searchQuery.trim() || statusFilter || mechanicFilterId || typeFilter || priorityFilter);
+  const clearFilters = () => {
+    setSearchQuery("");
+    setStatusFilter(null);
+    setMechanicFilterId(null);
+    setMechanicFilterName(null);
+    setTypeFilter(null);
+    setPriorityFilter(null);
+  };
+  const filteredOrders = sortWorkOrdersForQueue(
+    visibleOrders.filter((order) => {
+      const query = searchQuery.trim().toLowerCase();
+      const matchesQuery =
+        order.number.toLowerCase().includes(query) ||
+        order.plate.toLowerCase().includes(query) ||
+        order.maintenanceType.toLowerCase().includes(query) ||
+        order.mechanic.toLowerCase().includes(query) ||
+        order.chiefMechanic.toLowerCase().includes(query);
 
-    return matchesQuery && (!statusFilter || order.status === statusFilter) &&
-      (!typeFilter || order.maintenanceType === typeFilter) &&
-      (!priorityFilter || order.priority === priorityFilter);
-  }).sort((left, right) =>
-    right.createdAtTimestamp - left.createdAtTimestamp ||
-    right.number.localeCompare(left.number, undefined, { numeric: true }),
+      return matchesQuery && matchesWorkOrderDashboardFilter(order, statusFilter, mechanicFilterId) &&
+        (!typeFilter || order.maintenanceType === typeFilter) &&
+        (!priorityFilter || order.priority === priorityFilter);
+    }),
   );
 
   const ordersPerPage = 10;
@@ -1081,7 +1107,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
     // Reset pagination when filters change so results start on the first page.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setCurrentPage(1);
-  }, [searchQuery, statusFilter, typeFilter, priorityFilter, accessRole, user.id]);
+  }, [searchQuery, statusFilter, mechanicFilterId, typeFilter, priorityFilter, accessRole, user.id]);
 
   useEffect(() => {
     // Clamp the page when filtering reduces the available page count.
@@ -2536,7 +2562,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
               strokeLinejoin="round"
             />
           </Svg>
-          {statusFilter || typeFilter || priorityFilter ? <View style={styles.activeFilterDot} /> : null}
+          {statusFilter || mechanicFilterId || typeFilter || priorityFilter ? <View style={styles.activeFilterDot} /> : null}
         </TouchableOpacity>
       </View>
 
@@ -2585,6 +2611,9 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
           ))}
         </View>
       )}
+      {mechanicFilterName ? (
+        <Text style={styles.sectionText}>Mechanic: {mechanicFilterName}</Text>
+      ) : null}
       <View style={styles.searchRow}>
         <Text style={styles.sectionText}>{filteredOrders.length} of {visibleOrders.length} work orders</Text>
         {filtersActive && <TouchableOpacity onPress={clearFilters} accessibilityRole="button"><Text style={{ color: "#1a1f6e", fontWeight: "700" }}>Clear filters</Text></TouchableOpacity>}
@@ -2727,6 +2756,7 @@ const styles = StyleSheet.create({
     gap: 8,
     marginBottom: 12,
   },
+  prioritySortHint: { color: "#64748b", fontSize: 12, marginTop: -8, marginBottom: 8 },
   searchInput: {
     flex: 1,
     backgroundColor: "#ffffff",

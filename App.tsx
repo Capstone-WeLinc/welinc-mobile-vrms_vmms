@@ -21,6 +21,7 @@ import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 
 import { clearDatabase, initializeDatabase } from "./database/database";
 import { DashboardScreen } from "./screens/DashboardScreen";
+import type { DashboardWorkOrderFilter } from "./screens/workOrderDashboardFilter";
 import { MobilePageHeader } from "./components/MobilePageHeader";
 import { LoginScreen } from "./screens/LoginScreen";
 import { ForgotPasswordScreen } from "./screens/ForgotPasswordScreen";
@@ -249,6 +250,8 @@ export default function App() {
     "dashboard" | "work-orders" | "notifications" | "profile"
   >("dashboard");
   const [navigationReloadKey, setNavigationReloadKey] = useState(0);
+  const [dashboardWorkOrderFilter, setDashboardWorkOrderFilter] =
+    useState<DashboardWorkOrderFilter | null>(null);
   const hasPasswordInput = Object.values(passwordForm).some((value) => value.length > 0);
   const passwordFormComplete = Boolean(
     passwordForm.current && passwordForm.next && passwordForm.confirm &&
@@ -425,10 +428,18 @@ export default function App() {
     screen: "dashboard" | "work-orders" | "notifications" | "profile",
   ) => {
     setNotificationOrderId(null);
+    setDashboardWorkOrderFilter(null);
     setActiveScreen(screen);
     setNavigationReloadKey((key) => key + 1);
     if (screen === "notifications") void inbox.refresh();
     if (screen === "profile") void refreshProfile();
+  };
+
+  const openDashboardWorkOrders = (filter: DashboardWorkOrderFilter) => {
+    setNotificationOrderId(null);
+    setDashboardWorkOrderFilter(filter);
+    setActiveScreen("work-orders");
+    setNavigationReloadKey((key) => key + 1);
   };
 
   const globalSearchItems = [
@@ -518,8 +529,8 @@ export default function App() {
             <Image source={welinc} style={styles.logo} resizeMode="contain" />
             <View style={styles.headerTextBlock}>
               <Text style={styles.title}>VMMS</Text>
-              <Text style={styles.userName}>
-                {user.name} •{" "}
+              <Text style={styles.userName}>{user.name}</Text>
+              <Text style={styles.userRole}>
                 {accessRole === "chiefMechanic" ? "Chief Mechanic" : "Mechanic"}
               </Text>
             </View>
@@ -622,9 +633,10 @@ export default function App() {
             syncService={syncService}
             onLogout={logout}
             onLoadingChange={setIsPageRefreshing}
+            onOpenWorkOrders={openDashboardWorkOrders}
           />
         ) : activeScreen === "work-orders" ? (
-          <WorkOrderScreen key={navigationReloadKey} accessRole={accessRole} user={user} initialOrderId={notificationOrderId} syncService={syncService} onLoadingChange={setIsPageRefreshing} />
+          <WorkOrderScreen key={navigationReloadKey} accessRole={accessRole} user={user} initialOrderId={notificationOrderId} initialDashboardFilter={dashboardWorkOrderFilter} syncService={syncService} onLoadingChange={setIsPageRefreshing} />
         ) : activeScreen === "notifications" ? (
           <NotificationsScreen key={navigationReloadKey} notifications={inbox.notifications} loading={inbox.loading} error={inbox.error} onRefresh={() => inbox.refresh()} onLoadingChange={setIsPageRefreshing} accessRole={accessRole} onOpen={(notification) => {
             void inbox.markRead(notification);
@@ -932,10 +944,11 @@ const styles = StyleSheet.create({
     gap: 8,
     flex: 1,
   },
-  logo: { width: 32, height: 32 },
+  logo: { width: 56, height: 56 },
   headerTextBlock: { flex: 1 },
   title: { fontSize: 24, fontWeight: "800", color: "#1a1f6e" },
-  userName: { fontSize: 13, color: "#64748b", marginTop: 2 },
+  userName: { fontSize: 13, fontWeight: "700", color: "#64748b", marginTop: 2 },
+  userRole: { fontSize: 12, color: "#64748b", marginTop: 1 },
   searchButton: {
     width: 36,
     height: 36,
