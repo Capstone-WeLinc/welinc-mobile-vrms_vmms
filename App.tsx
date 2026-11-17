@@ -616,7 +616,7 @@ export default function App() {
         ) : activeScreen === "notifications" ? (
           <NotificationsScreen key={navigationReloadKey} notifications={inbox.notifications} loading={inbox.loading} error={inbox.error} onRefresh={() => inbox.refresh()} onLoadingChange={setIsPageRefreshing} accessRole={accessRole} onOpen={(notification) => {
             void inbox.markRead(notification);
-            if (notification.source === "maintenance" && notification.scheduleId) {
+            if (notification.scheduleId) {
               setNotificationOrderId(notification.scheduleId);
               setActiveScreen("work-orders");
             }

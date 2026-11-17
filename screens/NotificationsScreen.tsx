@@ -12,9 +12,11 @@ const notificationColors = {
   OVERDUE: workOrderStatusColors.overdue,
   ODOMETER_BUFFER: workOrderStatusColors.pending,
   FUEL_ANOMALY: workOrderStatusColors.overdue,
+  ESCALATION: { backgroundColor: "#fff7ed", borderColor: "#c2410c" },
+  CRITICAL_ESCALATION: { backgroundColor: "#fff1f2", borderColor: "#b91c1c" },
 };
 
-const labels = { CREATED: "New assignment", DUE: "Due", OVERDUE: "Overdue", ODOMETER_BUFFER: "Odometer reminder", FUEL_ANOMALY: "Fuel anomaly" };
+const labels = { CREATED: "New assignment", DUE: "Due", OVERDUE: "Overdue", ODOMETER_BUFFER: "Odometer reminder", FUEL_ANOMALY: "Fuel anomaly", ESCALATION: "Overdue escalation", CRITICAL_ESCALATION: "Critical escalation" };
 
 export function NotificationsScreen({ notifications, loading, error, onRefresh, onOpen, onLoadingChange, accessRole }: {
   notifications: MaintenanceNotification[];
@@ -118,9 +120,9 @@ export function NotificationsScreen({ notifications, loading, error, onRefresh, 
       {error ? <Text accessibilityRole="alert" style={styles.error}>{error}</Text> : null}
       {!loading && !error && !notifications.length ? <Text>No notifications yet.</Text> : null}
       {notifications.map((item) => (
-        <TouchableOpacity key={`${item.source}-${item.id}`} style={[styles.card, notificationColors[item.kind]]} accessibilityRole="button" accessibilityLabel={`${item.readAt ? "Read" : "Unread"}. ${item.message}${item.source === "maintenance" ? ". Open work order." : ". Mark as read."}`} onPress={() => onOpen(item)}>
+        <TouchableOpacity key={`${item.source}-${item.id}`} style={[styles.card, notificationColors[item.kind]]} accessibilityRole="button" accessibilityLabel={`${item.readAt ? "Read" : "Unread"}. ${item.kind === "CRITICAL_ESCALATION" ? "Critical alert. " : ""}${item.message}${item.scheduleId ? ". Open work order." : ". Mark as read."}`} onPress={() => onOpen(item)}>
           <View style={styles.row}>
-            <Text style={styles.label}>{labels[item.kind]}</Text>
+            <Text style={[styles.label, item.kind === "CRITICAL_ESCALATION" && styles.criticalLabel]}>{labels[item.kind]}</Text>
             {!item.readAt ? <Text style={styles.label}>New</Text> : null}
           </View>
           <Text style={styles.message}>{item.message}</Text>
@@ -137,6 +139,7 @@ const styles = StyleSheet.create({
 
   row: { flexDirection: "row", justifyContent: "space-between", marginBottom: 8 },
   label: { fontWeight: "700", color: workOrderStatusTextColor },
+  criticalLabel: { color: "#991b1b" },
   message: { color: "#292929", lineHeight: 22 },
   date: { color: "#666", fontSize: 12, marginTop: 10 },
   error: { color: "#a32121" },

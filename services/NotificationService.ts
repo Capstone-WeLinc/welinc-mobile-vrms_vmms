@@ -5,7 +5,7 @@ import { installMobileAuthRefresh } from "./mobileAuthRefresh";
 export interface MaintenanceNotification {
   id: string;
   scheduleId?: string;
-  kind: "CREATED" | "DUE" | "OVERDUE" | "ODOMETER_BUFFER" | "FUEL_ANOMALY";
+  kind: "CREATED" | "DUE" | "OVERDUE" | "ODOMETER_BUFFER" | "FUEL_ANOMALY" | "ESCALATION" | "CRITICAL_ESCALATION";
   message: string;
   createdAt: string;
   readAt: string | null;
@@ -39,17 +39,28 @@ api.interceptors.request.use(async (config) => {
 export async function getNotifications(): Promise<MaintenanceNotification[]> {
   const [maintenanceResponse, generalResponse] = await Promise.all([
     api.get<(Omit<MaintenanceNotification, "source"> & { scheduleId: string })[]>("/maintenance-schedules/notifications"),
-    api.get<{ id: string; title: string; message: string; type: string; isRead: boolean; createdAt: string }[]>("/notifications"),
+    api.get<{ id: string; title: string; message: string; type: string; isRead: boolean; createdAt: string; maintenanceScheduleId?: string | null }[]>("/notifications"),
   ]);
   const maintenance = maintenanceResponse.data.map((item) => ({ ...item, source: "maintenance" as const }));
-  const general = generalResponse.data.filter((item) => /fuel.*anomaly|anomaly.*fuel/i.test(item.title)).map((item) => ({
-    id: item.id,
-    kind: "FUEL_ANOMALY" as const,
-    message: `${item.title}: ${item.message}`,
-    createdAt: item.createdAt,
-    readAt: item.isRead ? item.createdAt : null,
-    source: "general" as const,
-  }));
+  const general = generalResponse.data.flatMap((item) => {
+    const kind = /fuel.*anomaly|anomaly.*fuel/i.test(item.title)
+      ? "FUEL_ANOMALY"
+      : item.title === "Critical maintenance escalation"
+        ? "CRITICAL_ESCALATION"
+        : /maintenance overdue/i.test(item.title)
+          ? "ESCALATION"
+          : null;
+    if (!kind) return [];
+    return [{
+      id: item.id,
+      scheduleId: item.maintenanceScheduleId ?? undefined,
+      kind,
+      message: `${item.title}: ${item.message}`,
+      createdAt: item.createdAt,
+      readAt: item.isRead ? item.createdAt : null,
+      source: "general" as const,
+    }];
+  });
   return [...maintenance, ...general].sort((left, right) => right.createdAt.localeCompare(left.createdAt));
 }
 
