@@ -6,8 +6,10 @@ export function useNotifications(userId: string | undefined) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const currentUser = useRef(userId);
-  currentUser.current = userId;
   const inFlight = useRef<string | null>(null);
+  useEffect(() => {
+    currentUser.current = userId;
+  }, [userId]);
   const refresh = useCallback(async () => {
     if (!userId || inFlight.current === userId) return;
     inFlight.current = userId;
@@ -25,6 +27,8 @@ export function useNotifications(userId: string | undefined) {
     }
   }, [userId]);
   useEffect(() => {
+    // Drop the previous user's notifications before loading the new user's data.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setNotifications([]);
     setError(null);
     setLoading(false);

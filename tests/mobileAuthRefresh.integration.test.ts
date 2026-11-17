@@ -9,6 +9,7 @@ let mockRejectedResponseHandler: ((error: unknown) => Promise<unknown>) | undefi
 
 jest.mock("axios", () => ({
   __esModule: true,
+  isAxiosError: mockIsAxiosError,
   default: {
     post: mockAxiosPost,
     isAxiosError: mockIsAxiosError,
@@ -17,6 +18,8 @@ jest.mock("axios", () => ({
 
 jest.mock("expo-secure-store", () => mockSecureStore);
 
+// Import after registering mocks so the service receives the mocked clients.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 const { installMobileAuthRefresh } = require("../services/mobileAuthRefresh");
 
 beforeEach(() => {
@@ -30,11 +33,12 @@ beforeEach(() => {
 
 test("refreshes an expired mobile access token and retries the original request", async () => {
   mockAxiosPost.mockResolvedValue({
-    data: { accessToken: "refreshed-access-token", refreshToken: "rotated-refresh-token" },
+    data: { access_token: "refreshed-access-token", refresh_token: "rotated-refresh-token" },
   });
   mockIsAxiosError.mockReturnValue(true);
   const mockApi = {
     interceptors: {
+      request: { use: jest.fn() },
       response: {
         use: jest.fn((_onSuccess, onError) => { mockRejectedResponseHandler = onError; }),
       },
@@ -54,9 +58,9 @@ test("refreshes an expired mobile access token and retries the original request"
 
   expect(mockSecureStore.getItemAsync).toHaveBeenCalledWith("vmms_refresh_token");
   expect(mockAxiosPost).toHaveBeenCalledWith(
-    "https://vmms.example.test/api/auth/refresh",
-    { refreshToken: "expired-session-refresh-token" },
-    { headers: { "X-VMMS-Client": "mobile", "Content-Type": "application/json" } },
+    "https://vmms.example.test/api/auth/token",
+    "grant_type=refresh_token&refresh_token=expired-session-refresh-token&client_id=vmms-mobile&audience=VMMS",
+    { headers: { "Content-Type": "application/x-www-form-urlencoded" } },
   );
   expect(mockSecureStore.setItemAsync).toHaveBeenCalledWith("vmms_access_token", "refreshed-access-token");
   expect(mockSecureStore.setItemAsync).toHaveBeenCalledWith("vmms_refresh_token", "rotated-refresh-token");
@@ -67,11 +71,12 @@ test("refreshes an expired mobile access token and retries the original request"
 });
 
 test("shares one token refresh across simultaneous expired-token requests", async () => {
-  let finishTokenRefresh!: (response: { data: { accessToken: string; refreshToken: string } }) => void;
+  let finishTokenRefresh!: (response: { data: { access_token: string; refresh_token: string } }) => void;
   mockAxiosPost.mockImplementation(() => new Promise((resolve) => { finishTokenRefresh = resolve; }));
   mockIsAxiosError.mockReturnValue(true);
   const mockApi = {
     interceptors: {
+      request: { use: jest.fn() },
       response: {
         use: jest.fn((_onSuccess, onError) => { mockRejectedResponseHandler = onError; }),
       },
@@ -88,7 +93,7 @@ test("shares one token refresh across simultaneous expired-token requests", asyn
 
   expect(mockAxiosPost).toHaveBeenCalledTimes(1);
   expect(mockSecureStore.getItemAsync).toHaveBeenCalledTimes(1);
-  finishTokenRefresh({ data: { accessToken: "shared-access-token", refreshToken: "shared-refresh-token" } });
+  finishTokenRefresh({ data: { access_token: "shared-access-token", refresh_token: "shared-refresh-token" } });
   const responses = await Promise.all([firstRetry, secondRetry]);
 
   expect(mockAxiosPost).toHaveBeenCalledTimes(1);
@@ -108,6 +113,7 @@ test("clears saved credentials and does not retry when refresh token is rejected
   mockIsAxiosError.mockReturnValue(true);
   const mockApi = {
     interceptors: {
+      request: { use: jest.fn() },
       response: {
         use: jest.fn((_onSuccess, onError) => { mockRejectedResponseHandler = onError; }),
       },
@@ -135,6 +141,7 @@ test("clears credentials without calling the refresh endpoint when no refresh to
   mockIsAxiosError.mockReturnValue(true);
   const mockApi = {
     interceptors: {
+      request: { use: jest.fn() },
       response: {
         use: jest.fn((_onSuccess, onError) => { mockRejectedResponseHandler = onError; }),
       },
@@ -146,7 +153,7 @@ test("clears credentials without calling the refresh endpoint when no refresh to
   await expect(mockRejectedResponseHandler!({
     config: { url: "/fuel/anomalies", headers: {} },
     response: { status: 401 },
-  })).rejects.toThrow("Your session has expired. Please log in again.");
+  })).rejects.toThrow("Your session has expired. Please sign in again.");
 
   expect(mockAxiosPost).not.toHaveBeenCalled();
   expect(mockSecureStore.deleteItemAsync).toHaveBeenCalledTimes(3);
@@ -154,10 +161,11 @@ test("clears credentials without calling the refresh endpoint when no refresh to
 });
 
 test("clears credentials and skips retry when the backend returns malformed refreshed tokens", async () => {
-  mockAxiosPost.mockResolvedValue({ data: { accessToken: "access-token-without-rotation" } });
+  mockAxiosPost.mockResolvedValue({ data: { access_token: "access-token-without-rotation" } });
   mockIsAxiosError.mockReturnValue(true);
   const mockApi = {
     interceptors: {
+      request: { use: jest.fn() },
       response: {
         use: jest.fn((_onSuccess, onError) => { mockRejectedResponseHandler = onError; }),
       },
@@ -169,7 +177,7 @@ test("clears credentials and skips retry when the backend returns malformed refr
   await expect(mockRejectedResponseHandler!({
     config: { url: "/fuel/anomalies", headers: {} },
     response: { status: 401 },
-  })).rejects.toThrow("The backend returned an invalid refreshed session.");
+  })).rejects.toThrow("The sign in service returned an invalid refreshed session.");
 
   expect(mockAxiosPost).toHaveBeenCalledTimes(1);
   expect(mockSecureStore.deleteItemAsync).toHaveBeenCalledTimes(3);
@@ -178,7 +186,7 @@ test("clears credentials and skips retry when the backend returns malformed refr
 
 test("does not loop when the retried request also returns 401", async () => {
   mockAxiosPost.mockResolvedValue({
-    data: { accessToken: "refreshed-access-token", refreshToken: "rotated-refresh-token" },
+    data: { access_token: "refreshed-access-token", refresh_token: "rotated-refresh-token" },
   });
   mockIsAxiosError.mockReturnValue(true);
   const requestConfig: any = {
@@ -188,6 +196,7 @@ test("does not loop when the retried request also returns 401", async () => {
   const retryError = { config: requestConfig, response: { status: 401 } };
   const mockApi = {
     interceptors: {
+      request: { use: jest.fn() },
       response: {
         use: jest.fn((_onSuccess, onError) => { mockRejectedResponseHandler = onError; }),
       },
@@ -209,6 +218,7 @@ test("does not refresh credentials for a non-401 response", async () => {
   mockIsAxiosError.mockReturnValue(true);
   const mockApi = {
     interceptors: {
+      request: { use: jest.fn() },
       response: {
         use: jest.fn((_onSuccess, onError) => { mockRejectedResponseHandler = onError; }),
       },
@@ -229,10 +239,11 @@ test("does not refresh credentials for a non-401 response", async () => {
   expect(mockApi.request).not.toHaveBeenCalled();
 });
 
-test.each(["/auth/login", "/auth/refresh"])("does not recursively refresh a 401 from %s", async (url) => {
+test.each(["/auth/mobile/login", "/auth/token", "/auth/logout"])("does not recursively refresh a 401 from %s", async (url) => {
   mockIsAxiosError.mockReturnValue(true);
   const mockApi = {
     interceptors: {
+      request: { use: jest.fn() },
       response: {
         use: jest.fn((_onSuccess, onError) => { mockRejectedResponseHandler = onError; }),
       },

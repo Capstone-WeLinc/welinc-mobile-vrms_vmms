@@ -116,10 +116,10 @@ export async function createTables(
 async function hasMissingRequiredColumns(
   db: SQLite.SQLiteDatabase,
 ): Promise<boolean> {
-  const requiredTables: Array<{
+  const requiredTables: {
     tableName: string;
     requiredColumns: string[];
-  }> = [
+  }[] = [
     {
       tableName: "vehicles",
       requiredColumns: [

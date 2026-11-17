@@ -1,13 +1,14 @@
-import axios, { type AxiosInstance } from "axios";
+import { create as createAxios, isAxiosError, type AxiosInstance } from "axios";
 import * as SecureStore from "expo-secure-store";
 import {
   ACCESS_TOKEN_KEY,
   REFRESH_TOKEN_KEY,
   USER_KEY,
   installMobileAuthRefresh,
+  MOBILE_CLIENT_ID,
+  refreshAccessToken,
 } from "./mobileAuthRefresh";
-import { getMobileAccessRole } from "./mobileAccessRole";
-export { getMobileAccessRole } from "./mobileAccessRole";
+import { Platform } from "react-native";
 
 const DEFAULT_API_BASE_URL = "http://localhost:3000";
 
@@ -21,24 +22,27 @@ export interface AuthenticatedUser {
   email: string;
   contact: string | null;
   profilePicture: string | null;
-  roles: Array<{ role: string; system: string }>;
+  roles: { role: string; system: string }[];
 }
+
+export type MobileAccessRole = "mechanic" | "chiefMechanic";
 
 export interface MobileUserSummary {
   id: string;
   name: string;
-  roles: Array<{ role: string; system: string }>;
+  roles: { role: string; system: string }[];
+  temporaryRoles?: string[];
 }
 
 interface BackendUserSummary {
   id?: unknown;
+  userId?: unknown;
   name?: unknown;
   role?: unknown;
-  rawRoles?: unknown;
+  roles?: unknown;
+  temporaryRoles?: unknown;
   status?: unknown;
 }
-
-export type { MobileAccessRole } from "./mobileAccessRole";
 
 interface LoginResponse {
   accessToken: string;
@@ -46,50 +50,79 @@ interface LoginResponse {
   user: AuthenticatedUser;
 }
 
+export type EmailVerificationChallenge = {
+  status: "EMAIL_VERIFICATION_REQUIRED";
+  challengeId: string;
+  email: string;
+  resendAfter: string;
+};
+type MobileLoginResponse = LoginResponse | EmailVerificationChallenge;
+
 export class AuthService {
   private readonly api: AxiosInstance;
 
   constructor(apiBaseUrl: string = API_BASE_URL) {
-    this.api = axios.create({
+    this.api = createAxios({
       baseURL: apiBaseUrl,
       timeout: 15_000,
       headers: {
         Accept: "application/json",
         "Content-Type": "application/json",
-        "X-VMMS-Client": "mobile",
       },
     });
     installMobileAuthRefresh(this.api, apiBaseUrl);
   }
 
-  async login(email: string, password: string): Promise<AuthenticatedUser> {
+  async login(email: string, password: string): Promise<AuthenticatedUser | EmailVerificationChallenge> {
     try {
-      const response = await this.api.post<LoginResponse>("/auth/login", {
+      const response = await this.api.post<MobileLoginResponse>("/auth/mobile/login", {
         email: email.trim().toLowerCase(),
         password,
+        clientId: MOBILE_CLIENT_ID,
+        deviceName: `${Platform.OS} device`,
       });
-      const { accessToken, refreshToken, user } = response.data;
-      if (!accessToken || !refreshToken || !isAuthenticatedUser(user)) {
-        throw new Error("The backend returned an invalid login response");
-      }
-
-      if (getMobileAccessRole(user.roles) === "none") {
-        await this.clearSession();
-        throw new Error(
-          "Only mechanics and chief mechanics can use this mobile version.",
-        );
-      }
-
-      await Promise.all([
-        SecureStore.setItemAsync(ACCESS_TOKEN_KEY, accessToken),
-        SecureStore.setItemAsync(REFRESH_TOKEN_KEY, refreshToken),
-        SecureStore.setItemAsync(USER_KEY, JSON.stringify(user)),
-      ]);
-      return user;
+      if ("challengeId" in response.data) return response.data;
+      await this.storeMobileSession(response.data);
+      return response.data.user;
     } catch (error) {
       console.error("[Auth] Login failed", error);
       throw new Error(getAuthErrorMessage(error));
     }
+  }
+
+  async verifyEmail(challengeId: string, code: string): Promise<AuthenticatedUser> {
+    try {
+      const response = await this.api.post<LoginResponse>("/auth/mobile/login/verify-email", {
+        challengeId,
+        code,
+        clientId: MOBILE_CLIENT_ID,
+        deviceName: `${Platform.OS} device`,
+      });
+      await this.storeMobileSession(response.data);
+      return response.data.user;
+    } catch (error) {
+      throw new Error(getAuthErrorMessage(error));
+    }
+  }
+
+  async resendEmailCode(challengeId: string): Promise<void> {
+    try {
+      await this.api.post("/auth/mobile/login/verify-email/resend", { challengeId });
+    } catch (error) {
+      throw new Error(getAuthErrorMessage(error));
+    }
+  }
+
+  private async storeMobileSession(answer: LoginResponse): Promise<void> {
+    const { accessToken, refreshToken, user } = answer;
+    if (!accessToken || !refreshToken || !isAuthenticatedUser(user)) {
+        throw new Error("The backend returned an invalid login response");
+    }
+    await Promise.all([
+        SecureStore.setItemAsync(ACCESS_TOKEN_KEY, accessToken),
+        SecureStore.setItemAsync(REFRESH_TOKEN_KEY, refreshToken),
+        SecureStore.setItemAsync(USER_KEY, JSON.stringify(user)),
+    ]);
   }
 
   /**
@@ -113,25 +146,11 @@ export class AuthService {
       return null;
     }
 
-    if (getMobileAccessRole(storedUser.roles) === "none") {
-      await this.clearSession();
-      return null;
-    }
-
     try {
-      const response = await this.api.get<AuthenticatedUser>("/auth/me", {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!isAuthenticatedUser(response.data))
-        throw new Error("Invalid profile response");
-      if (getMobileAccessRole(response.data.roles) === "none") {
-        await this.clearSession();
-        return null;
-      }
-      await SecureStore.setItemAsync(USER_KEY, JSON.stringify(response.data));
-      return response.data;
+      await refreshAccessToken(API_BASE_URL);
+      return storedUser;
     } catch (error) {
-      if (axios.isAxiosError(error) && error.response) {
+      if (isAxiosError(error) && error.response) {
         if (error.response.status === 401 || error.response.status === 403) {
           await this.clearSession();
           return null;
@@ -147,17 +166,15 @@ export class AuthService {
   }
 
   async recordLogout(): Promise<void> {
-    const [token, refreshToken, userJson] = await Promise.all([
-      this.getAccessToken(),
+    const [refreshToken, userJson] = await Promise.all([
       SecureStore.getItemAsync(REFRESH_TOKEN_KEY),
       SecureStore.getItemAsync(USER_KEY),
     ]);
-    if (!token || !userJson) return;
+    if (!refreshToken || !userJson) return;
     try {
       await this.api.post(
         "/auth/logout",
-        { refreshToken },
-        { headers: { Authorization: `Bearer ${token}` } },
+        { refreshToken, clientId: MOBILE_CLIENT_ID },
       );
     } catch (error) {
       console.warn("[Auth] Unable to record logout activity", error);
@@ -201,7 +218,7 @@ export class AuthService {
     if (!token) return [];
 
     try {
-      const response = await this.api.get<unknown>("/users", {
+      const response = await this.api.get<unknown>("/mechanics", {
         headers: { Authorization: `Bearer ${token}` },
       });
       const users = Array.isArray(response.data)
@@ -217,12 +234,11 @@ export class AuthService {
         .filter(
           (candidate): candidate is MobileUserSummary => candidate !== null,
         )
-        .filter(
-          (candidate) =>
-            getMobileAccessRole(candidate.roles) === "chiefMechanic",
-        );
+        .filter((candidate) => candidate.roles.some((role) =>
+          role.system === "VMMS" && role.role === "CHIEF_MECHANIC" &&
+          !(candidate as MobileUserSummary & { temporaryRoles?: string[] }).temporaryRoles?.includes(role.role)));
     } catch (error) {
-      if (axios.isAxiosError(error) && error.response?.status === 401) {
+      if (isAxiosError(error) && error.response?.status === 401) {
         return [];
       }
       console.warn("[Auth] Chief mechanic account lookup failed", error);
@@ -315,28 +331,26 @@ function toMobileUserSummary(value: unknown): MobileUserSummary | null {
     return null;
   }
 
-  const rawRoles = Array.isArray(candidate.rawRoles)
-    ? candidate.rawRoles
-    : typeof candidate.role === "string"
-      ? [{ role: candidate.role, system: "VMMS" }]
+  const rawRoles = Array.isArray(candidate.roles)
+    ? candidate.roles
+    : typeof candidate.role === "string" ? [candidate.role] : [];
+  const roles = rawRoles.flatMap((item) => {
+    if (typeof item === "string") return [{ role: item, system: "VMMS" }];
+    if (typeof item !== "object" || item === null) return [];
+    const role = item as { role?: unknown; system?: unknown };
+    return typeof role.role === "string"
+      ? [{ role: role.role, system: typeof role.system === "string" ? role.system : "VMMS" }]
       : [];
-  const roles = rawRoles
-    .filter(
-      (role): role is { role: string; system?: string } =>
-        typeof role === "object" &&
-        role !== null &&
-        typeof (role as { role?: unknown }).role === "string",
-    )
-    .map((role) => ({
-      role: role.role,
-      system: typeof role.system === "string" ? role.system : "VMMS",
-    }));
-
-  return { id: candidate.id, name: candidate.name, roles };
+  });
+  const temporaryRoles = Array.isArray(candidate.temporaryRoles)
+    ? candidate.temporaryRoles.filter((role): role is string => typeof role === "string")
+    : [];
+  const id = typeof candidate.userId === "string" ? candidate.userId : candidate.id;
+  return typeof id === "string" ? { id, name: candidate.name, roles, temporaryRoles } : null;
 }
 
 function getAuthErrorMessage(error: unknown): string {
-  if (!axios.isAxiosError(error)) {
+  if (!isAxiosError(error)) {
     return error instanceof Error ? error.message : "Unable to sign in";
   }
   if (!error.response) {

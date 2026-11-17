@@ -54,6 +54,7 @@ export function NotificationsScreen({ notifications, loading, error, onRefresh, 
     }
   }, [accessRole]);
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { void refreshFuelAnomalies(); }, [refreshFuelAnomalies]);
 
   const acknowledge = async (anomalyId: string) => {

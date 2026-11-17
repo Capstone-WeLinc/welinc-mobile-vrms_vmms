@@ -6,13 +6,13 @@ export function normalizePartDetails<T>(value: unknown): Record<string, T> {
 }
 
 export function getChangedExecutionItems<T extends { status: string }>(
-  items: ReadonlyArray<T>,
+  items: readonly T[],
 ): T[] {
   return items.filter((item) => item.status === "changed");
 }
 
 export function mergeUploadedAttachments<T extends { name: string; storageName?: string }>(
-  existing: ReadonlyArray<T>,
+  existing: readonly T[],
   uploaded: T,
 ): T[] {
   return [
@@ -25,7 +25,7 @@ export interface PartDetailEntry {
   partsUsed: string;
   quantity: string;
   materialCost: string;
-  attachments: Array<{ id: string; name: string; sizeMb: number; contentType?: string; storageName?: string }>;
+  attachments: { id: string; name: string; sizeMb: number; contentType?: string; storageName?: string }[];
   attachmentName: string;
 }
 
@@ -61,7 +61,7 @@ export function normalizePartDetailEntries(value: unknown): Record<string, PartD
 }
 
 export function getChecklistSubmissionError(
-  items: ReadonlyArray<{ label: string; status: string }>,
+  items: readonly { label: string; status: string }[],
 ): string | null {
   if (items.length === 0) {
     return "No checklist items are available. Refresh the work order or ask Operations to assign a checklist.";
@@ -74,12 +74,12 @@ export function getChecklistSubmissionError(
 }
 
 export function getChangedPartsSubmissionError(
-  items: ReadonlyArray<{ id: string; label: string; status: string }>,
+  items: readonly { id: string; label: string; status: string }[],
   partDetails: Record<string, {
     partsUsed?: string;
     quantity?: string;
     materialCost?: string;
-    attachments?: ReadonlyArray<unknown>;
+    attachments?: readonly unknown[];
   }>,
 ): string | null {
   const incomplete = items.filter((item) => {

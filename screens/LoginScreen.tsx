@@ -12,7 +12,7 @@ import {
   View,
 } from "react-native";
 
-import { AuthService, type AuthenticatedUser } from "../services/AuthService";
+import { AuthService, type AuthenticatedUser, type EmailVerificationChallenge } from "../services/AuthService";
 
 interface LoginScreenProps {
   authService: AuthService;
@@ -29,6 +29,8 @@ export function LoginScreen({ authService, onAuthenticated, onBack }: LoginScree
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState(false);
+  const [challenge, setChallenge] = useState<EmailVerificationChallenge | null>(null);
+  const [verificationCode, setVerificationCode] = useState("");
 
   const login = async () => {
     if (!email.trim() || !password) {
@@ -39,9 +41,43 @@ export function LoginScreen({ authService, onAuthenticated, onBack }: LoginScree
     setLoading(true);
     setError(null);
     try {
-      onAuthenticated(await authService.login(email, password));
+      const result = await authService.login(email, password);
+      if ("challengeId" in result) {
+        setChallenge(result);
+      } else {
+        onAuthenticated(result);
+      }
     } catch (loginError) {
       setError(loginError instanceof Error ? loginError.message : "Unable to sign in.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const verifyEmail = async () => {
+    if (!challenge || verificationCode.trim().length !== 6) {
+      setError("Enter the 6 digit code sent to your email.");
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      onAuthenticated(await authService.verifyEmail(challenge.challengeId, verificationCode.trim()));
+    } catch (verifyError) {
+      setError(verifyError instanceof Error ? verifyError.message : "Unable to verify the email.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const resendCode = async () => {
+    if (!challenge) return;
+    setLoading(true);
+    setError(null);
+    try {
+      await authService.resendEmailCode(challenge.challengeId);
+    } catch (resendError) {
+      setError(resendError instanceof Error ? resendError.message : "Unable to resend the code.");
     } finally {
       setLoading(false);
     }
@@ -72,9 +108,34 @@ export function LoginScreen({ authService, onAuthenticated, onBack }: LoginScree
             <Image source={welincLogo} style={styles.logo} resizeMode="cover" />
           </View>
 
-          <Text style={styles.title}>Sign In</Text>
-          <Text style={styles.subtitle}>Enter your credentials to access your workspace</Text>
+          <Text style={styles.title}>{challenge ? "Verify your email" : "Sign In"}</Text>
+          <Text style={styles.subtitle}>{challenge ? `Enter the 6 digit code sent to ${challenge.email}.` : "Enter your credentials to access your workspace"}</Text>
 
+          {challenge ? (
+            <>
+              <Text style={styles.label}>Verification code</Text>
+              <TextInput
+                autoCapitalize="none"
+                editable={!loading}
+                keyboardType="number-pad"
+                maxLength={6}
+                onChangeText={setVerificationCode}
+                onSubmitEditing={() => void verifyEmail()}
+                placeholder="000000"
+                placeholderTextColor="#64708d"
+                style={styles.input}
+                value={verificationCode}
+              />
+              {error ? <Text style={styles.error}>{error}</Text> : null}
+              <Pressable disabled={loading} onPress={() => void verifyEmail()} style={({ pressed }) => [styles.button, (pressed || loading) && styles.buttonPressed]}>
+                {loading ? <ActivityIndicator color="#101958" /> : <Text style={styles.buttonText}>Verify and Sign In</Text>}
+              </Pressable>
+              <TouchableOpacity disabled={loading} onPress={() => void resendCode()} style={{ marginTop: 14, alignItems: "center" }}>
+                <Text style={styles.backButtonText}>Resend code</Text>
+              </TouchableOpacity>
+            </>
+          ) : (
+            <>
           <Text style={styles.label}>Email Address <Text style={styles.required}>*</Text></Text>
           <TextInput
             autoCapitalize="none"
@@ -125,6 +186,8 @@ export function LoginScreen({ authService, onAuthenticated, onBack }: LoginScree
           <Pressable disabled={loading} onPress={() => void login()} style={({ pressed }) => [styles.button, (pressed || loading) && styles.buttonPressed]}>
             {loading ? <ActivityIndicator color="#101958" /> : <Text style={styles.buttonText}>Sign In</Text>}
           </Pressable>
+            </>
+          )}
           </View>
         </View>
       </KeyboardAvoidingView>

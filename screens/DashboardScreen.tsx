@@ -9,7 +9,7 @@ import {
 
 import { getMaintenanceSchedules } from "../database/database";
 import type { MaintenanceSchedule } from "../database/tables";
-import { getMobileAccessRole, type AuthenticatedUser } from "../services/AuthService";
+import type { AuthenticatedUser } from "../services/AuthService";
 import { SyncService, type SyncResult } from "../services/SyncService";
 import { MobilePageHeader } from "../components/MobilePageHeader";
 
@@ -67,7 +67,7 @@ function summarizeMechanicWork(schedules: MaintenanceSchedule[]): MechanicPerfor
         checklistItemsTotal: 0,
       };
       const status = getScheduleWorkflowStatus(schedule, progress);
-      const items = Array.isArray(progress.executionItems) ? progress.executionItems as Array<{ status?: unknown }> : [];
+      const items = Array.isArray(progress.executionItems) ? progress.executionItems as { status?: unknown }[] : [];
       summary.totalOrders += 1;
       summary.checklistItemsTotal += items.length;
       summary.checklistItemsDone += items.filter((item) => item.status === "checked" || item.status === "changed").length;
@@ -102,7 +102,8 @@ export function DashboardScreen({
     "starting" | "online" | "offline" | "error"
   >("starting");
   const [error, setError] = useState<string | null>(null);
-  const accessRole = getMobileAccessRole(user.roles);
+  const role = user.roles.find((item) => item.system === "VMMS")?.role;
+  const accessRole = role === "CHIEF_MECHANIC" ? "chiefMechanic" : "mechanic";
   const isChiefMechanic = accessRole === "chiefMechanic";
   const canViewPerformance = isChiefMechanic || accessRole === "mechanic";
   const mechanicPerformance = canViewPerformance ? summarizeMechanicWork(schedules) : [];
@@ -146,6 +147,8 @@ export function DashboardScreen({
   }, [applySyncResult, loadCache, onLoadingChange, syncService]);
 
   useEffect(() => {
+    // Show cached data immediately while the sync request runs.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void loadCache();
     const unsubscribeSync = syncService.subscribe(
       (result) => void applySyncResult(result),

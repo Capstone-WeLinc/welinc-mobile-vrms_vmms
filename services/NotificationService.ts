@@ -1,4 +1,4 @@
-import axios from "axios";
+import { create as createAxios } from "axios";
 import { API_BASE_URL, AuthService } from "./AuthService";
 import { installMobileAuthRefresh } from "./mobileAuthRefresh";
 
@@ -23,10 +23,10 @@ export interface FuelAnomalyApproval {
   vehicle: { plateNumber: string };
 }
 
-const api = axios.create({
+const api = createAxios({
   baseURL: API_BASE_URL,
   timeout: 15000,
-  headers: { "X-VMMS-Client": "mobile" },
+  headers: {},
 });
 installMobileAuthRefresh(api, API_BASE_URL);
 api.interceptors.request.use(async (config) => {
@@ -38,8 +38,8 @@ api.interceptors.request.use(async (config) => {
 
 export async function getNotifications(): Promise<MaintenanceNotification[]> {
   const [maintenanceResponse, generalResponse] = await Promise.all([
-    api.get<Array<Omit<MaintenanceNotification, "source"> & { scheduleId: string }>>("/maintenance-schedules/notifications"),
-    api.get<Array<{ id: string; title: string; message: string; type: string; isRead: boolean; createdAt: string }>>("/notifications"),
+    api.get<(Omit<MaintenanceNotification, "source"> & { scheduleId: string })[]>("/maintenance-schedules/notifications"),
+    api.get<{ id: string; title: string; message: string; type: string; isRead: boolean; createdAt: string }[]>("/notifications"),
   ]);
   const maintenance = maintenanceResponse.data.map((item) => ({ ...item, source: "maintenance" as const }));
   const general = generalResponse.data.filter((item) => /fuel.*anomaly|anomaly.*fuel/i.test(item.title)).map((item) => ({

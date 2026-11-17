@@ -11,6 +11,7 @@ const mockAxiosCreate = jest.fn(() => mockApiClient);
 
 jest.mock("axios", () => ({
   __esModule: true,
+  create: mockAxiosCreate,
   default: { create: mockAxiosCreate },
 }));
 
@@ -25,6 +26,8 @@ jest.mock("../services/mobileAuthRefresh", () => ({
   installMobileAuthRefresh: jest.fn(),
 }));
 
+// Import after registering mocks so the service receives the mocked clients.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 const { acknowledgeFuelAnomaly, getFuelAnomalyApprovals } = require("../services/NotificationService");
 
 const approval = {
@@ -51,7 +54,6 @@ test("uses the backend fuel approval contract to fetch and acknowledge as mobile
   expect(await getFuelAnomalyApprovals()).toEqual([approval]);
   expect(mockAxiosCreate).toHaveBeenCalledWith(expect.objectContaining({
     baseURL: "https://vmms.example.test/api",
-    headers: expect.objectContaining({ "X-VMMS-Client": "mobile" }),
   }));
   expect(mockApiClient.get).toHaveBeenCalledWith("/fuel/anomalies");
 

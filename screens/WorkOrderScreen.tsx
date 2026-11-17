@@ -32,7 +32,7 @@ import {
 import * as ImagePicker from "expo-image-picker";
 import * as DocumentPicker from "expo-document-picker";
 import { File, Paths } from "expo-file-system";
-import Svg, { Circle, Path } from "react-native-svg";
+import Svg, { Path } from "react-native-svg";
 
 import type { SyncService } from "../services/SyncService";
 import type {
@@ -728,7 +728,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
     return () => {
       mounted = false;
     };
-  }, [initialOrderId, syncService, accessRole, user.id, reloadVersion]);
+  }, [initialOrderId, syncService, accessRole, user.id, reloadVersion, onLoadingChange]);
 
   useEffect(() => {
     if (accessRole !== "chiefMechanic" || !syncService) return;
@@ -825,6 +825,9 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
     return () => {
       mounted = false;
     };
+    // The loader updates workOrders, so including it here would rerun the loader
+    // after its own update. A new order selection triggers the required reload.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedOrderId]);
 
   const loadAiAdvisory = useCallback(async (order: WorkOrder) => {
@@ -866,11 +869,11 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
     : null;
 
   useEffect(() => {
+    // Clear recommendations as soon as the selected order changes.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setAiRecommendations(null);
     setAiAdvisoryLoading(false);
   }, [selectedOrderId]);
-
-  const currentUserName = user.name.trim().toLowerCase();
 
   const persistWorkOrder = (order: WorkOrder, _status?: string, action = "SAVE") => {
     const partDetails = normalizePartDetailEntries(order.partDetails);
@@ -1075,10 +1078,14 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
     return { completed, total, percent: total ? Math.round((completed / total) * 100) : 0 };
   };
   useEffect(() => {
+    // Reset pagination when filters change so results start on the first page.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setCurrentPage(1);
   }, [searchQuery, statusFilter, typeFilter, priorityFilter, accessRole, user.id]);
 
   useEffect(() => {
+    // Clamp the page when filtering reduces the available page count.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (currentPage > totalPages) setCurrentPage(totalPages);
   }, [currentPage, totalPages]);
 
@@ -1352,7 +1359,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
     };
 
     const uploadPickedFiles = async (
-      files: Array<{ uri: string; name: string; type: string; size?: number }>,
+      files: { uri: string; name: string; type: string; size?: number }[],
     ) => {
       const remainingSlots = 5 - currentEntry.attachments.length;
       if (files.length > remainingSlots) {
@@ -1438,23 +1445,6 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
       },
       { text: "Cancel", style: "cancel" },
     ]);
-  };
-
-  const calculateMaterialCost = (orderId: string): string => {
-    const order = workOrders.find((o) => o.id === orderId);
-    if (!order) return "0.00";
-
-    const changedItemIds = new Set(
-      getChangedExecutionItems(order.executionItems).map((item) => item.id),
-    );
-    const total = Object.entries(normalizePartDetailEntries(order.partDetails)).reduce((sum, [itemId, entry]) => {
-      if (!changedItemIds.has(itemId)) return sum;
-      if (typeof entry?.partsUsed !== "string" || !entry.partsUsed.trim()) return sum;
-      const cost = Number.parseFloat(entry.materialCost || "0");
-      return sum + (Number.isNaN(cost) ? 0 : cost);
-    }, 0);
-
-    return total.toFixed(2);
   };
 
   const openOrder = (orderId: string) => {
@@ -1565,19 +1555,6 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
     );
   };
 
-  const verificationMessage = (order: WorkOrder): string | null => {
-    if (order.approvalStatus === "Rejected") {
-      return "Rejected, execute or check your list again";
-    }
-    if (order.approvalStatus === "For Repair") {
-      return "Already recommended in repair";
-    }
-    if (order.approvalStatus === "Unverified") {
-      return "Pending Verification";
-    }
-    return null;
-  };
-
   const inspectionDecisionLabel = (remark: InspectionRemark): string => {
     if (remark === "Verified") return "Approve Inspection";
     if (remark === "Rejected" || remark === "For Repair") {
@@ -1595,7 +1572,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, syncService,
     rawText: string | undefined,
     maintenanceType: string,
     executionItems: ExecutionItem[],
-  ): Array<{ title: string; items: string[] }> => {
+  ): { title: string; items: string[] }[] => {
     const parsed = rawText ? parseAiExecutionSections(rawText) : [];
     if (parsed.length >= 2) {
       return parsed;

@@ -1,4 +1,4 @@
-import axios, { type AxiosInstance } from "axios";
+import { create as createAxios, type AxiosInstance } from "axios";
 import * as SecureStore from "expo-secure-store";
 import { installMobileAuthRefresh } from "./mobileAuthRefresh";
 import { API_BASE_URL } from "./AuthService";
@@ -42,43 +42,39 @@ export interface WorkOrderSummaryData {
 export interface WorkOrderSummaryResponse {
   dataSource?: Record<string, unknown>;
   summary: WorkOrderSummaryData;
-  statusBreakdown?: Array<{
+  statusBreakdown?: {
     status: string;
     workOrderCount: number;
     percentage: number;
     totalCost: number;
-  }>;
-  mechanicWorkload?: Array<Record<string, unknown>>;
-  timeline?: Array<Record<string, unknown>>;
-  topMaintenanceTypes?: Array<Record<string, unknown>>;
+  }[];
+  mechanicWorkload?: Record<string, unknown>[];
+  timeline?: Record<string, unknown>[];
+  topMaintenanceTypes?: Record<string, unknown>[];
 }
 
-export const ANALYTICS_API_BASE_URL =
-  process.env.EXPO_PUBLIC_ANALYTICS_API_BASE_URL?.trim().replace(/\/$/, "") ||
-  API_BASE_URL.replace(/:\d+$/, ":3001");
+export const ANALYTICS_API_BASE_URL = API_BASE_URL;
 
 export class WorkOrderAnalyticsService {
   private readonly api: AxiosInstance;
   private readonly fallbackApi: AxiosInstance;
 
   constructor(apiBaseUrl: string = ANALYTICS_API_BASE_URL) {
-    this.api = axios.create({
+    this.api = createAxios({
       baseURL: apiBaseUrl,
       timeout: 15_000,
       headers: {
         Accept: "application/json",
         "Content-Type": "application/json",
-        "X-VMMS-Client": "mobile",
       },
     });
 
-    this.fallbackApi = axios.create({
+    this.fallbackApi = createAxios({
       baseURL: API_BASE_URL,
       timeout: 15_000,
       headers: {
         Accept: "application/json",
         "Content-Type": "application/json",
-        "X-VMMS-Client": "mobile",
       },
     });
     installMobileAuthRefresh(this.api, API_BASE_URL);
@@ -104,7 +100,7 @@ export class WorkOrderAnalyticsService {
     id: string,
     title?: string,
     vehicle?: string,
-    checklistItems?: Array<{ text: string }> | string[],
+    checklistItems?: { text: string }[] | string[],
   ): Promise<WorkOrderRecommendationsResponse> {
     const headers = await this.getAuthHeaders();
     const payload = {
