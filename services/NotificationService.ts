@@ -43,7 +43,7 @@ export async function getNotifications(): Promise<MaintenanceNotification[]> {
   ]);
   const maintenance = maintenanceResponse.data.map((item) => ({ ...item, source: "maintenance" as const }));
   const general = generalResponse.data.flatMap((item) => {
-    const kind = /fuel.*anomaly|anomaly.*fuel/i.test(item.title)
+    const kind: MaintenanceNotification["kind"] | null = /fuel.*anomaly|anomaly.*fuel/i.test(item.title)
       ? "FUEL_ANOMALY"
       : item.title === "Critical maintenance escalation"
         ? "CRITICAL_ESCALATION"

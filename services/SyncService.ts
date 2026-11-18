@@ -5,7 +5,7 @@ import { create as createAxios, isAxiosError, type AxiosInstance, type AxiosRequ
 import { installMobileAuthRefresh } from "./mobileAuthRefresh";
 import { resolveCreatedDate } from "./workOrderDates";
 
-import { clearDatabase, initializeDatabase } from "../database/database";
+import { initializeDatabase } from "../database/database";
 import type {
   ChecklistItem,
   ChecklistTemplate,
@@ -99,7 +99,7 @@ interface ServerChecklistItem {
 type ServerChecklistResponse = Record<string, ServerChecklistItem[]>;
 
 /**
- * Pull-only synchronization for server-owned reference data.
+ * Pull server-owned reference data and push locally queued work-order progress.
  *
  * Start this service after authentication. Reads should always come from the
  * repositories, so the UI behaves identically online and offline.
@@ -156,9 +156,8 @@ export class SyncService {
     return this.syncInFlight;
   }
 
-  /** Clear the local cache and repopulate it from the backend. */
+  /** Refresh server snapshots without discarding queued work-order progress. */
   async forceRefreshFromBackend(): Promise<SyncResult> {
-    await clearDatabase();
     return this.sync();
   }
 
@@ -212,6 +211,12 @@ export class SyncService {
     const synchronizedAt = new Date().toISOString();
 
     try {
+      const db = await initializeDatabase();
+      const maintenanceRepository = new MaintenanceRepository(db);
+      // Push offline progress first so the schedule snapshot below includes any
+      // changes the backend accepted during this synchronization.
+      await this.syncPendingWorkOrderProgress(maintenanceRepository);
+
       const [vehicleResponse, scheduleResponse, checklistResponse] =
         await Promise.all([
           this.api.get<ServerVehicle[]>("/vehicles"),
@@ -232,9 +237,6 @@ export class SyncService {
         synchronizedAt,
       );
 
-      const db = await initializeDatabase();
-      const maintenanceRepository = new MaintenanceRepository(db);
-      await this.syncPendingWorkOrderProgress(maintenanceRepository);
       await db.withExclusiveTransactionAsync(async (transaction) => {
         await new VehicleRepository(transaction).reconcileSnapshot(vehicles);
         await new MaintenanceRepository(transaction).reconcileSnapshot(schedules);
@@ -284,11 +286,16 @@ export class SyncService {
       if (!schedule.workOrderProgress) continue;
 
       let progress: Record<string, unknown>;
+      let localRevision: number | null = null;
       try {
         const parsed: unknown = JSON.parse(schedule.workOrderProgress);
         if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
         const storedProgress = parsed as Record<string, unknown>;
         if (storedProgress._syncPending !== true) continue;
+        localRevision =
+          typeof storedProgress._localRevision === "number"
+            ? storedProgress._localRevision
+            : null;
         progress = { ...storedProgress };
         delete progress._syncPending;
         delete progress._localRevision;
@@ -302,8 +309,9 @@ export class SyncService {
           workOrderProgress?: Record<string, unknown>;
         }>(`/maintenance-schedules/${schedule.id}/progress`, progress);
         const confirmedProgress = response.data.workOrderProgress ?? progress;
-        await repository.updateWorkOrderProgress(
+        await repository.confirmPendingWorkOrderProgress(
           schedule.id,
+          localRevision,
           JSON.stringify({ ...confirmedProgress, _syncPending: false }),
           response.data.status,
         );
