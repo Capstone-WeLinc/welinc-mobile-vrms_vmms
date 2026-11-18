@@ -2,6 +2,35 @@ import type { SQLiteDatabase } from "expo-sqlite";
 
 import type { MaintenanceSchedule } from "../database/tables";
 
+function hasPendingWorkOrderProgress(value: string | null | undefined): boolean {
+  if (!value) return false;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return typeof parsed === "object" && parsed !== null &&
+      !Array.isArray(parsed) &&
+      (parsed as Record<string, unknown>)._syncPending === true;
+  } catch {
+    return false;
+  }
+}
+
+function hasMatchingPendingRevision(
+  value: string | null | undefined,
+  revision: number | null,
+): boolean {
+  if (!value) return false;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+    const progress = parsed as Record<string, unknown>;
+    if (progress._syncPending !== true) return false;
+    if (revision === null) return progress._localRevision === undefined;
+    return progress._localRevision === revision;
+  } catch {
+    return false;
+  }
+}
+
 export class MaintenanceRepository {
   constructor(private readonly db: SQLiteDatabase) {}
 
@@ -94,14 +123,35 @@ export class MaintenanceRepository {
     await this.db.runAsync(
       `UPDATE maintenance_schedules
        SET workOrderProgress = ?,
-           status = COALESCE(?, status),
-           updatedAt = ?
+           status = COALESCE(?, status)
        WHERE id = ?`,
       workOrderProgress,
       status ?? null,
-      new Date().toISOString(),
       scheduleId,
     );
+  }
+
+  async confirmPendingWorkOrderProgress(
+    scheduleId: string,
+    revision: number | null,
+    workOrderProgress: string,
+    status?: string,
+  ): Promise<boolean> {
+    const current = await this.db.getFirstAsync<{
+      workOrderProgress: string | null;
+    }>(
+      "SELECT workOrderProgress FROM maintenance_schedules WHERE id = ?",
+      scheduleId,
+    );
+    if (!hasMatchingPendingRevision(current?.workOrderProgress, revision)) {
+      return false;
+    }
+    await this.updateWorkOrderProgress(
+      scheduleId,
+      workOrderProgress,
+      status,
+    );
+    return true;
   }
 
   async reconcileSnapshot(schedules: MaintenanceSchedule[]): Promise<void> {
@@ -112,6 +162,23 @@ export class MaintenanceRepository {
 
     try {
       for (const schedule of schedules) {
+        const current = await this.db.getFirstAsync<{
+          workOrderProgress: string | null;
+          status: string | null;
+        }>(
+          "SELECT workOrderProgress, status FROM maintenance_schedules WHERE id = ?",
+          schedule.id,
+        );
+        const hasPendingProgress = hasPendingWorkOrderProgress(
+          current?.workOrderProgress,
+        );
+        const workOrderProgress = hasPendingProgress
+          ? current?.workOrderProgress ?? schedule.workOrderProgress
+          : schedule.workOrderProgress;
+        const status = hasPendingProgress
+          ? current?.status ?? schedule.status
+          : schedule.status;
+
         await this.db.runAsync(
           "INSERT OR IGNORE INTO incoming_schedule_ids (id) VALUES (?)",
           schedule.id,
@@ -176,7 +243,7 @@ export class MaintenanceRepository {
           schedule.vehicleId,
           schedule.title,
           schedule.garageId,
-            schedule.status,
+            status,
             schedule.priority ?? "MEDIUM",
           schedule.startDate,
           schedule.assignedMechanic,
@@ -195,7 +262,7 @@ export class MaintenanceRepository {
           schedule.partsCost,
           schedule.laborCost,
           schedule.totalCost,
-          schedule.workOrderProgress,
+          workOrderProgress,
           schedule.deletedAt,
           schedule.createdAt,
           schedule.updatedAt,

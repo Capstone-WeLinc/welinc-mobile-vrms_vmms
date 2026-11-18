@@ -2,11 +2,22 @@
 
 The app creates `vmms_mobile.db` automatically on first launch using Expo SQLite.
 The local repositories are the UI's data source whether the device is online or
-offline. `SyncService` pulls authenticated snapshots from the existing endpoints:
+offline. VMMS owns schedules, vehicles, and checklists on the backend; the mobile
+app owns work-order progress while it is being entered offline. When connectivity
+returns, synchronization pushes queued work-order progress to the backend and
+pulls fresh authenticated snapshots from these endpoints:
 
 - `GET /vehicles`
 - `GET /maintenance-schedules`
 - `GET /checklists`
+
+Progress saved without a connection stays in SQLite with a pending marker. Once
+online, the app sends it to `PATCH /maintenance-schedules/:id/progress`; accepted
+progress is marked synced. The app then refreshes vehicle, schedule, and checklist
+snapshots from the VMMS API (backed by PostgreSQL) and reconciles them into SQLite
+in a transaction. Progress that the server has not accepted remains queued across
+snapshot refreshes for a later retry. When network connectivity returns,
+`SyncService` starts this synchronization automatically.
 
 Authentication and synchronization are wired into `App.tsx`. The app signs in
 through welinc-auth's mobile login route, stores the rotating refresh token and
