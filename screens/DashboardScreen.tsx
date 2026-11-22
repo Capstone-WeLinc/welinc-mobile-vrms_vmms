@@ -13,16 +13,19 @@ import type { MaintenanceSchedule } from "../database/tables";
 import type { AuthenticatedUser } from "../services/AuthService";
 import { SyncService, type SyncResult } from "../services/SyncService";
 import { MobilePageHeader } from "../components/MobilePageHeader";
+import { MaintenanceStatusLegend } from "../components/MaintenanceStatusLegend";
 import type {
   DashboardWorkOrderFilter,
   DashboardWorkOrderStatus,
 } from "./workOrderDashboardFilter";
+import { workOrderStatusColors, workOrderStatusTextColors } from "./workOrderStatusColors";
 
 type MechanicPerformanceSummary = {
   key: string;
   mechanic: string;
   totalOrders: number;
   pending: number;
+  due: number;
   inProgress: number;
   overdue: number;
   awaitingReview: number;
@@ -33,16 +36,31 @@ type MechanicPerformanceSummary = {
 };
 
 function getScheduleWorkflowStatus(schedule: MaintenanceSchedule, progress: Record<string, unknown>): string {
+  switch (schedule.status) {
+    case "PENDING": return "Pending";
+    case "DUE": return "Due";
+    case "OVERDUE": return "Overdue";
+    case "COMPLETED": return "Completed";
+    case "CANCELLED": return "Cancelled";
+  }
   if (typeof progress.workflowStatus === "string") return progress.workflowStatus;
   switch (schedule.status) {
-    case "COMPLETED": return "Completed";
     case "DONE": return "Done";
     case "IN_PROGRESS": return "In Progress";
-    case "OVERDUE": return "Overdue";
-    case "DUE":
-    case "PENDING": return "Pending";
-    case "CANCELLED": return "Cancelled";
     default: return "Pending";
+  }
+}
+
+function getDashboardMetricColors(status: DashboardWorkOrderStatus) {
+  switch (status) {
+    case "Pending": return { container: workOrderStatusColors.pending, text: workOrderStatusTextColors.pending };
+    case "Due": return { container: workOrderStatusColors.due, text: workOrderStatusTextColors.due };
+    case "In Progress": return { container: workOrderStatusColors.inProgress, text: workOrderStatusTextColors.inProgress };
+    case "Overdue": return { container: workOrderStatusColors.overdue, text: workOrderStatusTextColors.overdue };
+    case "Awaiting Review": return { container: workOrderStatusColors.verification, text: workOrderStatusTextColors.verification };
+    case "Completed": return { container: workOrderStatusColors.completed, text: workOrderStatusTextColors.completed };
+    case "Returned": return { container: workOrderStatusColors.rejected, text: workOrderStatusTextColors.rejected };
+    default: return { container: workOrderStatusColors.pending, text: workOrderStatusTextColors.pending };
   }
 }
 
@@ -63,6 +81,7 @@ function summarizeMechanicWork(schedules: MaintenanceSchedule[]): MechanicPerfor
         mechanic: schedule.assignedMechanic || "Assigned Mechanic",
         totalOrders: 0,
         pending: 0,
+        due: 0,
         inProgress: 0,
         overdue: 0,
         awaitingReview: 0,
@@ -80,6 +99,7 @@ function summarizeMechanicWork(schedules: MaintenanceSchedule[]): MechanicPerfor
       else if (status === "Rejected" || status === "For Repair") summary.returned += 1;
       else if (status === "Done" || status === "For Verification" || progress.mechanicSubmitted === true) summary.awaitingReview += 1;
       else if (status === "In Progress") summary.inProgress += 1;
+      else if (status === "Due") summary.due += 1;
       else if (status === "Overdue") summary.overdue += 1;
       else if (status !== "Cancelled") summary.pending += 1;
       summaries.set(key, summary);
@@ -210,6 +230,7 @@ export function DashboardScreen({
                   ? "Progress for Mechanics assigned to your schedules."
                   : "Your work-order progress and checklist completion."}
               </Text>
+              <MaintenanceStatusLegend />
               {mechanicPerformance.length === 0 ? (
                 <Text style={styles.emptyCard}>
                   {isChiefMechanic ? "No assigned Mechanic work is available yet." : "You have no assigned work orders yet."}
@@ -227,6 +248,7 @@ export function DashboardScreen({
                     <View style={styles.performanceMetrics}>
                       {([
                         { label: "Pending", value: summary.pending },
+                        { label: "Due", value: summary.due },
                         { label: "In Progress", value: summary.inProgress },
                         { label: "Overdue", value: summary.overdue },
                         { label: "Awaiting Review", value: summary.awaitingReview },
@@ -246,11 +268,12 @@ export function DashboardScreen({
                           }
                           style={({ pressed }) => [
                             styles.performanceMetric,
+                            getDashboardMetricColors(metric.label).container,
                             pressed && styles.performanceMetricPressed,
                           ]}
                         >
-                          <Text style={styles.performanceMetricValue}>{metric.value}</Text>
-                          <Text style={styles.performanceMetricLabel}>{metric.label}</Text>
+                          <Text style={[styles.performanceMetricValue, { color: getDashboardMetricColors(metric.label).text }]}>{metric.value}</Text>
+                          <Text style={[styles.performanceMetricLabel, { color: getDashboardMetricColors(metric.label).text }]}>{metric.label}</Text>
                         </Pressable>
                       ))}
                     </View>

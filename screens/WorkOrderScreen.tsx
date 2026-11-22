@@ -1,4 +1,7 @@
-import { workOrderStatusColors, workOrderStatusTextColor } from "./workOrderStatusColors";
+import {
+  workOrderStatusColors,
+  workOrderStatusTextColors,
+} from "./workOrderStatusColors";
 import {
   getChangedExecutionItems,
   getChangedPartsSubmissionError,
@@ -18,7 +21,9 @@ import {
 } from "./workOrderDashboardFilter";
 import { formatWorkOrderDate as formatReadableDate } from "../services/workOrderDates";
 import { MobilePageHeader } from "../components/MobilePageHeader";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { MaintenanceStatusLegend } from "../components/MaintenanceStatusLegend";
+import { isLaterDateOnly, isValidDateOnly } from "./scheduleExtensionDate";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -43,6 +48,9 @@ import Svg, { Path } from "react-native-svg";
 import type { SyncService } from "../services/SyncService";
 import type {
   AuthenticatedUser,
+  CreatedMaintenanceScheduleExtension,
+  MaintenanceScheduleExtensionHistory,
+  MaintenanceScheduleExtensionRequest,
   MobileAccessRole,
 } from "../services/AuthService";
 import { API_BASE_URL, AuthService } from "../services/AuthService";
@@ -58,6 +66,7 @@ import type { ChecklistItem, MaintenanceSchedule } from "../database/tables";
 
 type WorkOrderStatus =
   | "Pending"
+  | "Due"
   | "In Progress"
   | "For Verification"
   | "Overdue"
@@ -124,6 +133,40 @@ type WorkOrder = {
   mechanicSubmitted: boolean;
   workOrderProgress: string | null;
 };
+
+function wasInProgressBeforeOverdue(workOrderProgress: string | null): boolean {
+  if (!workOrderProgress) return false;
+  try {
+    const progress = JSON.parse(workOrderProgress) as {
+      overdueFromStatus?: unknown;
+    };
+    return progress.overdueFromStatus === "IN_PROGRESS";
+  } catch {
+    return false;
+  }
+}
+
+function getApiErrorMessage(error: unknown, fallback: string): string {
+  const response = typeof error === "object" && error !== null
+    ? (error as { response?: { data?: { message?: unknown } } }).response
+    : undefined;
+  const message = response?.data?.message;
+  if (Array.isArray(message)) {
+    const messages = message.filter(
+      (item): item is string => typeof item === "string",
+    );
+    if (messages.length) return messages.join("\n");
+  }
+  if (typeof message === "string" && message.trim()) return message;
+  return error instanceof Error ? error.message : fallback;
+}
+
+function formatManilaTimestamp(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? value
+    : date.toLocaleString("en-PH", { timeZone: "Asia/Manila" });
+}
 
 type PersistedWorkOrderProgress = Omit<
   Pick<
@@ -501,10 +544,39 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
   const [currentPage, setCurrentPage] = useState(1);
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [activeStep, setActiveStep] = useState<StepKey>("details");
+  const [extensionPanelOpen, setExtensionPanelOpen] = useState(false);
+  const [extensionHistory, setExtensionHistory] =
+    useState<MaintenanceScheduleExtensionHistory | null>(null);
+  const [extensionHistoryLoading, setExtensionHistoryLoading] = useState(false);
+  const [extensionHistoryError, setExtensionHistoryError] = useState<string | null>(null);
+  const [extensionRequestedDueDate, setExtensionRequestedDueDate] = useState("");
+  const [extensionReason, setExtensionReason] = useState("");
+  const [extensionSubmitting, setExtensionSubmitting] = useState(false);
+  const [extensionSuccessMessage, setExtensionSuccessMessage] = useState<string | null>(null);
+  const [activePartSuggestionItemId, setActivePartSuggestionItemId] = useState<string | null>(null);
   const [previewAttachmentUri, setPreviewAttachmentUri] = useState<string | null>(null);
   const [aiAdvisoryLoading, setAiAdvisoryLoading] = useState(false);
   const [aiRecommendations, setAiRecommendations] =
     useState<WorkOrderRecommendationsResponse | null>(null);
+  const extensionHistoryRequestId = useRef(0);
+
+  const resetExtensionPanel = () => {
+    extensionHistoryRequestId.current += 1;
+    setExtensionPanelOpen(false);
+    setExtensionHistory(null);
+    setExtensionHistoryLoading(false);
+    setExtensionHistoryError(null);
+    setExtensionRequestedDueDate("");
+    setExtensionReason("");
+    setExtensionSubmitting(false);
+    setExtensionSuccessMessage(null);
+  };
+
+  const closeOrder = () => {
+    resetExtensionPanel();
+    setActivePartSuggestionItemId(null);
+    setSelectedOrderId(null);
+  };
 
   const refreshWorkOrders = () => {
     if (isLoading || pullRefreshing) return;
@@ -593,19 +665,17 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
               dateCreated: formatReadableDate(schedule.createdAt),
               createdAtTimestamp: Date.parse(schedule.createdAt) || 0,
               startDate: schedule.startDate,
-              status:
-                savedProgress.status ??
-                (schedule.status === "PENDING"
-                  ? "Pending"
-                  : schedule.status === "DUE"
-                    ? "Pending"
-                    : schedule.status === "IN_PROGRESS"
-                      ? "In Progress"
-                      : schedule.status === "COMPLETED"
-                        ? "Completed"
-                        : schedule.status === "CANCELLED"
-                          ? "Cancelled"
-                        : "Overdue"),
+              status: schedule.status === "PENDING"
+                ? "Pending"
+                : schedule.status === "DUE"
+                  ? "Due"
+                  : schedule.status === "OVERDUE"
+                    ? "Overdue"
+                    : schedule.status === "COMPLETED"
+                      ? "Completed"
+                      : schedule.status === "CANCELLED"
+                        ? "Cancelled"
+                        : savedProgress.status ?? "In Progress",
               priority: schedule.priority ?? "MEDIUM",
               partsCost: schedule.partsCost,
               laborCost: savedProgress.laborCost ?? schedule.laborCost,
@@ -883,6 +953,18 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
       }
     : null;
 
+  const partNameSuggestions = useMemo(() => {
+    const names = new Set<string>();
+    workOrders.forEach((order) => {
+      if (order.id === selectedOrderId) return;
+      Object.values(order.partDetails).forEach((entry) => {
+        const name = entry.partsUsed.trim();
+        if (name) names.add(name);
+      });
+    });
+    return [...names].sort((left, right) => left.localeCompare(right));
+  }, [selectedOrderId, workOrders]);
+
   useEffect(() => {
     // Clear recommendations as soon as the selected order changes.
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -971,6 +1053,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
             : null
           : getChecklistSubmissionError(selectedOrder.executionItems);
       if (error) {
+        setActivePartSuggestionItemId(null);
         setActiveStep("execution");
         Alert.alert(
           "Assigned checklist required",
@@ -985,6 +1068,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
         selectedOrder.partDetails,
       );
       if (partsError) {
+        setActivePartSuggestionItemId(null);
         setActiveStep("parts");
         Alert.alert("Parts details incomplete", partsError);
         return;
@@ -1006,7 +1090,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
       if (action !== "START") {
         Alert.alert(action === "SUBMIT" ? "Sent for Chief Mechanic Review" : "Review saved",
           action === "SUBMIT" ? "Your work is Done and awaiting chief mechanic approval." : action === "APPROVE" ? "Work order Completed." : "Work order returned for follow-up.");
-        setSelectedOrderId(null);
+        closeOrder();
       }
     } catch (error) {
       const response = (error as { response?: { data?: { message?: string | string[] } } }).response;
@@ -1474,12 +1558,107 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
   };
 
   const openOrder = (orderId: string) => {
+    resetExtensionPanel();
+    setActivePartSuggestionItemId(null);
     setSelectedOrderId(orderId);
     setActiveStep("details");
   };
 
   const isMechanicRole = accessRole === "mechanic";
   const isChiefMechanicRole = accessRole === "chiefMechanic";
+
+  const loadExtensionHistory = async (scheduleId: string) => {
+    const requestId = ++extensionHistoryRequestId.current;
+    setExtensionHistoryLoading(true);
+    setExtensionHistoryError(null);
+    setExtensionSuccessMessage(null);
+    try {
+      const history = await new AuthService(API_BASE_URL)
+        .getMaintenanceScheduleExtensionHistory(scheduleId);
+      if (requestId === extensionHistoryRequestId.current) {
+        setExtensionHistory(history);
+      }
+    } catch (error) {
+      if (requestId === extensionHistoryRequestId.current) {
+        setExtensionHistoryError(
+          getApiErrorMessage(error, "Unable to load extension history."),
+        );
+      }
+    } finally {
+      if (requestId === extensionHistoryRequestId.current) {
+        setExtensionHistoryLoading(false);
+      }
+    }
+  };
+
+  const toggleExtensionPanel = () => {
+    if (extensionPanelOpen) {
+      setExtensionPanelOpen(false);
+      return;
+    }
+    setExtensionPanelOpen(true);
+    if (selectedOrder && !extensionHistory && !extensionHistoryLoading) {
+      void loadExtensionHistory(selectedOrder.id);
+    }
+  };
+
+  const submitExtensionRequest = async () => {
+    if (!selectedOrder || !extensionHistory) return;
+    const requestedDueDate = extensionRequestedDueDate.trim();
+    const reason = extensionReason.trim();
+    if (!isLaterDateOnly(requestedDueDate, extensionHistory.currentTargetDueDate)) {
+      setExtensionHistoryError("Enter a valid date later than the current target due date.");
+      return;
+    }
+    if (!reason || reason.length > 2000) {
+      setExtensionHistoryError("Enter a request reason of 1 to 2000 characters.");
+      return;
+    }
+    if (
+      extensionHistory.requests.length >= 2 ||
+      extensionHistory.requests.some((request) => request.reviewStatus === "PENDING")
+    ) {
+      setExtensionHistoryError("This schedule has no extension requests available.");
+      return;
+    }
+
+    const requestId = extensionHistoryRequestId.current;
+    setExtensionSubmitting(true);
+    setExtensionHistoryError(null);
+    setExtensionSuccessMessage(null);
+    try {
+      const created: CreatedMaintenanceScheduleExtension =
+        await new AuthService(API_BASE_URL).requestMaintenanceScheduleExtension(
+          selectedOrder.id,
+          { requestedDueDate, reason },
+        );
+      if (requestId !== extensionHistoryRequestId.current) return;
+      const newRequest: MaintenanceScheduleExtensionRequest = {
+        ...created,
+        reviewedByName: null,
+        reviewReason: null,
+        reviewedAt: null,
+      };
+      setExtensionHistory((current) =>
+        current
+          ? { ...current, requests: [newRequest, ...current.requests] }
+          : current,
+      );
+      setExtensionRequestedDueDate("");
+      setExtensionReason("");
+      setExtensionSuccessMessage("Request sent for Admin review.");
+    } catch (error) {
+      if (requestId === extensionHistoryRequestId.current) {
+        setExtensionHistoryError(
+          getApiErrorMessage(error, "Unable to submit the extension request."),
+        );
+      }
+    } finally {
+      if (requestId === extensionHistoryRequestId.current) {
+        setExtensionSubmitting(false);
+      }
+    }
+  };
   const canChiefReviewSelectedOrder = Boolean(isChiefMechanicRole && selectedOrder &&
     selectedOrder.chiefMechanicId === user.id && selectedOrder.mechanicSubmitted &&
     isAwaitingChiefReview(selectedOrder, user.id));
@@ -1539,11 +1718,14 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
   const statusStyle = (status: WorkOrderStatus) => {
     switch (status) {
       case "Completed":
-      case "Done":
+      case "Cancelled":
         return styles.statusCompleted;
       case "In Progress":
         return styles.statusInProgress;
+      case "Due":
+        return styles.statusDue;
       case "For Verification":
+      case "Done":
         return styles.statusVerification;
       case "Rejected":
         return styles.statusRejected;
@@ -1556,9 +1738,32 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
     }
   };
 
+  const statusTextColor = (status: WorkOrderStatus) => {
+    switch (status) {
+      case "Due":
+        return workOrderStatusTextColors.due;
+      case "In Progress":
+        return workOrderStatusTextColors.inProgress;
+      case "For Verification":
+      case "Done":
+        return workOrderStatusTextColors.verification;
+      case "Rejected":
+        return workOrderStatusTextColors.rejected;
+      case "For Repair":
+        return workOrderStatusTextColors.repair;
+      case "Overdue":
+        return workOrderStatusTextColors.overdue;
+      case "Completed":
+      case "Cancelled":
+        return workOrderStatusTextColors.completed;
+      default:
+        return workOrderStatusTextColors.pending;
+    }
+  };
+
   const renderStatusBadge = (status: WorkOrderStatus) => (
     <View style={[styles.statusBadge, statusStyle(status)]}>
-      <Text style={[styles.statusBadgeText, status === "Overdue" && styles.statusOverdueText]}>{status}</Text>
+      <Text style={[styles.statusBadgeText, { color: statusTextColor(status) }]}>{status}</Text>
     </View>
   );
 
@@ -1837,7 +2042,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
   };
 
   if (selectedOrder) {
-    const canManuallyStart = ["Pending", "Overdue", "Rejected"].includes(selectedOrder.status) &&
+    const canManuallyStart = ["Pending", "Due", "Overdue", "Rejected"].includes(selectedOrder.status) &&
       !selectedOrder.mechanicSubmitted;
     const startDateReached = isWorkOrderStartDateReached(selectedOrder.startDate);
     const mechanicOrderLocked =
@@ -1855,6 +2060,33 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
         ? [{ item, entry }]
         : [];
     });
+    const isAssignedMechanic =
+      isMechanicRole && selectedOrder.assignedMechanicId === user.id;
+    const canRequestExtension = isAssignedMechanic && (
+      selectedOrder.status === "In Progress" ||
+      (selectedOrder.status === "Overdue" &&
+        wasInProgressBeforeOverdue(selectedOrder.workOrderProgress))
+    );
+    const hasPendingExtension = extensionHistory?.requests.some(
+      (request) => request.reviewStatus === "PENDING",
+    ) ?? false;
+    const extensionLimitReached = (extensionHistory?.requests.length ?? 0) >= 2;
+    const extensionDateValid = Boolean(
+      extensionHistory?.currentTargetDueDate &&
+        isLaterDateOnly(
+          extensionRequestedDueDate.trim(),
+          extensionHistory.currentTargetDueDate,
+        ),
+    );
+    const canSubmitExtension = Boolean(
+      canRequestExtension &&
+        extensionHistory?.currentTargetDueDate &&
+        !hasPendingExtension &&
+        !extensionLimitReached &&
+        extensionDateValid &&
+        extensionReason.trim().length > 0 &&
+        !extensionSubmitting,
+    );
     return (
       <View style={styles.container}>
         <Modal
@@ -1891,7 +2123,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
         <View style={styles.detailHeaderBar}>
           <TouchableOpacity
             style={styles.backButton}
-            onPress={() => setSelectedOrderId(null)}
+            onPress={closeOrder}
           >
             <Text style={styles.backButtonText}>‹ Back to Assigned Orders</Text>
           </TouchableOpacity>
@@ -1916,7 +2148,10 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
                 styles.stepButton,
                 activeStep === item.key && styles.stepButtonActive,
               ]}
-              onPress={() => setActiveStep(item.key)}
+              onPress={() => {
+                setActivePartSuggestionItemId(null);
+                setActiveStep(item.key);
+              }}
             >
               <Text
                 style={[
@@ -1940,9 +2175,10 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
               {renderAiAdvisoryCard()}
               {/* Maintenance Schedule Details */}
               <View style={styles.detailCard}>
-                <Text style={styles.sectionTitle}>
-                  Maintenance Schedule Details
-                </Text>
+                <View style={styles.detailStatusRow}>
+                  <Text style={styles.sectionTitle}>Maintenance Schedule Details</Text>
+                  {renderStatusBadge(selectedOrder.status)}
+                </View>
                 <Text style={styles.sectionText}>
                   Details from the maintenance schedule.
                 </Text>
@@ -1998,6 +2234,198 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
                   <View style={styles.remarksSection}>
                     <Text style={styles.remarksLabel}>Mechanic Maintenance Remarks</Text>
                     <Text style={styles.sectionText}>{selectedOrder.maintenanceRemarks}</Text>
+                  </View>
+                ) : null}
+
+                {isAssignedMechanic ? (
+                  <View style={styles.extensionSection}>
+                    <View style={styles.extensionHeader}>
+                      <View style={styles.extensionHeading}>
+                        <Text style={styles.sectionTitle}>Schedule extension</Text>
+                        <Text style={styles.sectionText}>
+                          Request a due-date change for Admin review and track decisions here.
+                        </Text>
+                      </View>
+                      <TouchableOpacity
+                        accessibilityRole="button"
+                        accessibilityState={{ expanded: extensionPanelOpen }}
+                        onPress={toggleExtensionPanel}
+                        style={styles.extensionToggle}
+                      >
+                        <Text style={styles.extensionToggleText}>
+                          {extensionPanelOpen ? "Hide history" : "Request / history"}
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                    {extensionPanelOpen ? (
+                      <View style={styles.extensionContent}>
+                        {extensionHistoryLoading ? (
+                          <ActivityIndicator
+                            accessible
+                            accessibilityLabel="Loading schedule extension history"
+                            accessibilityRole="progressbar"
+                            color="#1a1f6e"
+                          />
+                        ) : null}
+                        {extensionHistoryError ? (
+                          <View style={styles.extensionErrorBlock}>
+                            <Text accessibilityRole="alert" style={styles.extensionError}>
+                              {extensionHistoryError}
+                            </Text>
+                            {!extensionHistory ? (
+                              <TouchableOpacity
+                                accessibilityRole="button"
+                                onPress={() => void loadExtensionHistory(selectedOrder.id)}
+                                style={styles.extensionRetry}
+                              >
+                                <Text style={styles.extensionRetryText}>Retry</Text>
+                              </TouchableOpacity>
+                            ) : null}
+                          </View>
+                        ) : null}
+                        {extensionSuccessMessage ? (
+                          <Text style={styles.extensionSuccess}>{extensionSuccessMessage}</Text>
+                        ) : null}
+                        {extensionHistory ? (
+                          <>
+                            <Text style={styles.extensionCurrentDate}>
+                              Current target due date: {extensionHistory.currentTargetDueDate ?? "Not recorded"}
+                            </Text>
+                            <TouchableOpacity
+                              accessibilityRole="button"
+                              disabled={extensionHistoryLoading || extensionSubmitting}
+                              onPress={() => void loadExtensionHistory(selectedOrder.id)}
+                              style={styles.extensionRetry}
+                            >
+                              <Text style={styles.extensionRetryText}>Refresh extension history</Text>
+                            </TouchableOpacity>
+                            {canRequestExtension && !extensionHistory.currentTargetDueDate ? (
+                              <Text style={styles.extensionHint}>
+                                This schedule has no recorded target due date. Ask Operations to update the schedule before requesting an extension.
+                              </Text>
+                            ) : null}
+                            {canRequestExtension &&
+                            extensionHistory.currentTargetDueDate &&
+                            !hasPendingExtension &&
+                            !extensionLimitReached ? (
+                              <View style={styles.extensionForm}>
+                                <Text style={styles.remarksLabel}>Proposed target due date</Text>
+                                <TextInput
+                                  accessibilityLabel="Proposed target due date"
+                                  style={styles.partsInput}
+                                  value={extensionRequestedDueDate}
+                                  onChangeText={(value) => {
+                                    setExtensionRequestedDueDate(value);
+                                    setExtensionHistoryError(null);
+                                    setExtensionSuccessMessage(null);
+                                  }}
+                                  placeholder="YYYY-MM-DD"
+                                  placeholderTextColor="#64748b"
+                                  autoCapitalize="none"
+                                  keyboardType="numbers-and-punctuation"
+                                  maxLength={10}
+                                />
+                                {extensionRequestedDueDate.trim() &&
+                                !isValidDateOnly(extensionRequestedDueDate.trim()) ? (
+                                  <Text style={styles.extensionFieldError}>
+                                    Enter a real date in YYYY-MM-DD format.
+                                  </Text>
+                                ) : extensionRequestedDueDate.trim() &&
+                                  !extensionDateValid ? (
+                                  <Text style={styles.extensionFieldError}>
+                                    The proposed date must be later than {extensionHistory.currentTargetDueDate}.
+                                  </Text>
+                                ) : null}
+                                <Text style={styles.remarksLabel}>Reason for extension</Text>
+                                <TextInput
+                                  accessibilityLabel="Reason for extension"
+                                  style={styles.extensionReasonInput}
+                                  value={extensionReason}
+                                  onChangeText={(value) => {
+                                    setExtensionReason(value);
+                                    setExtensionHistoryError(null);
+                                    setExtensionSuccessMessage(null);
+                                  }}
+                                  placeholder="Explain why the schedule needs more time"
+                                  placeholderTextColor="#64748b"
+                                  multiline
+                                  maxLength={2000}
+                                />
+                                {!extensionReason.trim() ? (
+                                  <Text style={styles.extensionFieldError}>
+                                    A reason is required.
+                                  </Text>
+                                ) : null}
+                                <Text style={styles.extensionHint}>
+                                  {2 - extensionHistory.requests.length} request(s) remaining. A request does not change the due date until Admin approval.
+                                </Text>
+                                <TouchableOpacity
+                                  accessibilityRole="button"
+                                  accessibilityState={{ disabled: !canSubmitExtension }}
+                                  disabled={!canSubmitExtension}
+                                  onPress={() => void submitExtensionRequest()}
+                                  style={[
+                                    styles.extensionSubmit,
+                                    !canSubmitExtension && styles.extensionSubmitDisabled,
+                                  ]}
+                                >
+                                  <Text style={styles.extensionSubmitText}>
+                                    {extensionSubmitting ? "Sending request..." : "Send extension request"}
+                                  </Text>
+                                </TouchableOpacity>
+                              </View>
+                            ) : null}
+                            {canRequestExtension && hasPendingExtension ? (
+                              <Text style={styles.extensionHint}>
+                                An extension request is already awaiting Admin review.
+                              </Text>
+                            ) : null}
+                            {canRequestExtension && extensionLimitReached ? (
+                              <Text style={styles.extensionHint}>
+                                This schedule has reached the two-request limit.
+                              </Text>
+                            ) : null}
+                            {!canRequestExtension ? (
+                              <Text style={styles.extensionHint}>
+                                Requests are available while work is in progress. Overdue work must have been in progress before it became overdue.
+                              </Text>
+                            ) : null}
+                            <View style={styles.extensionHistory}>
+                              <Text style={styles.remarksLabel}>Request history</Text>
+                              {extensionHistory.requests.length === 0 ? (
+                                <Text style={styles.sectionText}>No extension requests yet.</Text>
+                              ) : extensionHistory.requests.map((request) => (
+                                <View key={request.id} style={styles.extensionHistoryItem}>
+                                  <View style={styles.extensionHistoryHeader}>
+                                    <Text style={styles.extensionHistoryStatus}>
+                                      {request.reviewStatus}
+                                    </Text>
+                                    <Text style={styles.extensionHistoryDate}>
+                                      {request.requestedDueDate}
+                                    </Text>
+                                  </View>
+                                  <Text style={styles.extensionHistoryBody}>
+                                    Requested {formatManilaTimestamp(request.requestedAt)} by {request.actorName}
+                                  </Text>
+                                  <Text style={styles.extensionHistoryBody}>{request.reason}</Text>
+                                  {request.reviewedAt ? (
+                                    <Text style={styles.extensionHistoryBody}>
+                                      Reviewed {formatManilaTimestamp(request.reviewedAt)}
+                                      {request.reviewedByName ? ` by ${request.reviewedByName}` : ""}
+                                    </Text>
+                                  ) : null}
+                                  {request.reviewReason ? (
+                                    <Text style={styles.extensionHistoryBody}>
+                                      Review reason: {request.reviewReason}
+                                    </Text>
+                                  ) : null}
+                                </View>
+                              ))}
+                            </View>
+                          </>
+                        ) : null}
+                      </View>
+                    ) : null}
                   </View>
                 ) : null}
 
@@ -2170,7 +2598,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
             <View style={styles.detailCard}>
               <Text style={styles.sectionTitle}>Parts, Cost & Photos</Text>
               <Text style={styles.sectionText}>
-                Record any parts or materials used against the relevant checklist item. Parts, quantity, cost, and an attachment are required for items marked Changed.
+                Record parts used against changed checklist items. Existing names are suggested, but any new part name is allowed.
               </Text>
               <View style={styles.remarksSection}>
                 <Text style={styles.remarksLabel}>Labor Cost (₱) *</Text>
@@ -2196,6 +2624,12 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
                   attachments: [],
                   attachmentName: "",
                 };
+                const partsQuery = partEntry.partsUsed.trim().toLowerCase();
+                const suggestions = partsQuery
+                  ? partNameSuggestions
+                    .filter((name) => name.toLowerCase().includes(partsQuery))
+                    .slice(0, 5)
+                  : [];
 
                 return (
                   <View key={item.id} style={styles.partsItemCard}>
@@ -2204,6 +2638,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
                       <View style={styles.partsItemColumn}>
                         <Text style={styles.partsLabel}>Parts Used</Text>
                         <TextInput
+                          accessibilityLabel={`Parts used for ${item.label}`}
                           style={styles.partsInput}
                           editable={!executionReadOnly}
                           value={partEntry.partsUsed}
@@ -2217,7 +2652,37 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
                           }
                           placeholder="Enter parts used"
                           placeholderTextColor="#94a3b8"
+                          onFocus={() => setActivePartSuggestionItemId(item.id)}
                         />
+                              {activePartSuggestionItemId === item.id &&
+                              !executionReadOnly &&
+                              partsQuery ? (
+                                <View style={styles.partsSuggestions}>
+                                  {suggestions.length ? suggestions.map((name) => (
+                                    <Pressable
+                                      key={name}
+                                      accessibilityRole="button"
+                                      accessibilityLabel={`Use part name ${name}`}
+                                      onPress={() => {
+                                        updatePartDetailField(
+                                          selectedOrder.id,
+                                          item.id,
+                                          "partsUsed",
+                                          name,
+                                        );
+                                        setActivePartSuggestionItemId(null);
+                                      }}
+                                      style={styles.partsSuggestion}
+                                    >
+                                      <Text style={styles.partsSuggestionText}>{name}</Text>
+                                    </Pressable>
+                                  )) : (
+                                    <Text style={styles.partsSuggestionEmpty}>
+                                      No matching prior names. You can enter a new part name.
+                                    </Text>
+                                  )}
+                                </View>
+                              ) : null}
                       </View>
                       <View style={styles.partsItemColumn}>
                         <Text style={styles.partsLabel}>
@@ -2236,6 +2701,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
                               text,
                             )
                           }
+                          onFocus={() => setActivePartSuggestionItemId(null)}
                           placeholder="0"
                           placeholderTextColor="#94a3b8"
                         />
@@ -2257,6 +2723,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
                               text,
                             )
                           }
+                          onFocus={() => setActivePartSuggestionItemId(null)}
                           placeholder="0.00"
                           placeholderTextColor="#94a3b8"
                         />
@@ -2439,6 +2906,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
                 (step) => step.key === activeStep,
               );
               const previousStep = visibleSteps[Math.max(0, currentIndex - 1)];
+              setActivePartSuggestionItemId(null);
               setActiveStep(previousStep.key);
             }}
           >
@@ -2454,6 +2922,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
                 visibleSteps[
                   Math.min(visibleSteps.length - 1, currentIndex + 1)
                 ];
+              setActivePartSuggestionItemId(null);
               setActiveStep(nextStep.key);
             }}
           >
@@ -2471,7 +2940,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
             ]}
             onPress={() => {
               if (isMechanicRole) {
-                if (["Pending", "Overdue", "Rejected"].includes(selectedOrder.status) && !selectedOrder.mechanicSubmitted) void performWorkflowAction("START");
+                if (["Pending", "Due", "Overdue", "Rejected"].includes(selectedOrder.status) && !selectedOrder.mechanicSubmitted) void performWorkflowAction("START");
                 else handleCompleteOrder();
               } else handleInspectionAction();
             }}
@@ -2493,7 +2962,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
                   ? "Completed"
                   : selectedOrder.mechanicSubmitted
                     ? "Awaiting Chief Review"
-                    : ["Pending", "Overdue", "Rejected"].includes(selectedOrder.status)
+                    : ["Pending", "Due", "Overdue", "Rejected"].includes(selectedOrder.status)
                       ? "Start Work"
                       : "Mark Done & Submit"
                 : getInspectionActionLabel(getAutomaticInspectionRemark(selectedOrder.inspectionItems))}
@@ -2515,6 +2984,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
             : "Your assigned work orders grouped by mechanic"}
         />
       </View>
+      <MaintenanceStatusLegend />
 
       {isChiefMechanicRole ? (
         <View style={styles.chiefQueueToggle}>
@@ -2845,14 +3315,14 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
   },
   statusPending: workOrderStatusColors.pending,
+  statusDue: workOrderStatusColors.due,
   statusInProgress: workOrderStatusColors.inProgress,
   statusVerification: workOrderStatusColors.verification,
   statusRejected: workOrderStatusColors.rejected,
   statusRepair: workOrderStatusColors.repair,
   statusOverdue: workOrderStatusColors.overdue,
   statusCompleted: workOrderStatusColors.completed,
-  statusBadgeText: { fontSize: 11, fontWeight: "700", color: workOrderStatusTextColor },
-  statusOverdueText: { color: "#b91c1c" },
+  statusBadgeText: { fontSize: 11, fontWeight: "700" },
   priorityBadge: { alignSelf: "flex-start", borderRadius: 999, borderWidth: 1, paddingHorizontal: 10, paddingVertical: 4 },
   priorityHigh: { backgroundColor: "#fee2e2", borderColor: "#fca5a5" },
   priorityMedium: { backgroundColor: "#fef3c7", borderColor: "#fcd34d" },
@@ -2985,8 +3455,85 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     shadowOffset: { width: 0, height: 2 },
   },
+  detailStatusRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 8,
+  },
   sectionTitle: { fontSize: 18, fontWeight: "800", color: "#0d0d0d" },
   sectionText: { color: "#64748b", fontSize: 13, marginTop: 2 },
+  extensionSection: {
+    borderTopWidth: 1,
+    borderTopColor: "#e2e8f0",
+    paddingTop: 14,
+    marginTop: 4,
+    gap: 12,
+  },
+  extensionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  extensionHeading: { flex: 1, gap: 2 },
+  extensionToggle: {
+    minHeight: 44,
+    justifyContent: "center",
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    backgroundColor: "#eff6ff",
+  },
+  extensionToggleText: { color: "#1d4ed8", fontSize: 12, fontWeight: "700" },
+  extensionContent: { gap: 10 },
+  extensionForm: { gap: 8 },
+  extensionReasonInput: {
+    minHeight: 84,
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+    backgroundColor: "#ffffff",
+    color: "#0d0d0d",
+    fontSize: 13,
+    textAlignVertical: "top",
+  },
+  extensionCurrentDate: { color: "#334155", fontSize: 13, fontWeight: "700" },
+  extensionHint: { color: "#475569", fontSize: 12, lineHeight: 18 },
+  extensionFieldError: { color: "#991b1b", fontSize: 12 },
+  extensionErrorBlock: { gap: 6 },
+  extensionError: { color: "#991b1b", fontSize: 13 },
+  extensionSuccess: { color: "#065f46", fontSize: 13, fontWeight: "700" },
+  extensionRetry: { alignSelf: "flex-start", minHeight: 44, justifyContent: "center" },
+  extensionRetryText: { color: "#1d4ed8", fontWeight: "700" },
+  extensionSubmit: {
+    minHeight: 44,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 8,
+    backgroundColor: "#1a1f6e",
+    paddingHorizontal: 12,
+  },
+  extensionSubmitDisabled: { opacity: 0.55 },
+  extensionSubmitText: { color: "#ffffff", fontWeight: "700" },
+  extensionHistory: { gap: 8, marginTop: 4 },
+  extensionHistoryItem: {
+    borderTopWidth: 1,
+    borderTopColor: "#e2e8f0",
+    paddingTop: 10,
+    gap: 4,
+  },
+  extensionHistoryHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 8,
+  },
+  extensionHistoryStatus: { color: "#334155", fontSize: 12, fontWeight: "800" },
+  extensionHistoryDate: { color: "#0f172a", fontSize: 12, fontWeight: "700" },
+  extensionHistoryBody: { color: "#475569", fontSize: 12, lineHeight: 17 },
 
   /* Schedule Details */
   scheduleGrid: {
@@ -3212,6 +3759,22 @@ const styles = StyleSheet.create({
     color: "#0d0d0d",
     fontSize: 13,
   },
+  partsSuggestions: {
+    borderWidth: 1,
+    borderColor: "#cbd5e1",
+    borderRadius: 8,
+    backgroundColor: "#ffffff",
+    overflow: "hidden",
+  },
+  partsSuggestion: {
+    minHeight: 44,
+    justifyContent: "center",
+    paddingHorizontal: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: "#e2e8f0",
+  },
+  partsSuggestionText: { color: "#1e293b", fontSize: 13 },
+  partsSuggestionEmpty: { color: "#475569", fontSize: 12, padding: 10 },
   uploadButton: {
     minHeight: 44,
     borderWidth: 1,
