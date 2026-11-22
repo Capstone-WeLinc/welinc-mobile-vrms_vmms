@@ -1,16 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { workOrderStatusColors, workOrderStatusTextColor } from "./workOrderStatusColors";
+import { MaintenanceStatusLegend } from "../components/MaintenanceStatusLegend";
 import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
 import { acknowledgeFuelAnomaly, getFuelAnomalyApprovals, type FuelAnomalyApproval, type MaintenanceNotification } from "../services/NotificationService";
 import { MobilePageHeader } from "../components/MobilePageHeader";
 import { getPendingCriticalFuelApprovals, shouldShowFuelAnomalyApprovalPanel } from "../services/fuelAnomalyApprovalVisibility";
 
-// Due and odometer reminders correspond to pending work orders in the mobile list.
 const notificationColors = {
   CREATED: workOrderStatusColors.pending,
-  DUE: workOrderStatusColors.pending,
+  DUE: workOrderStatusColors.due,
   OVERDUE: workOrderStatusColors.overdue,
-  ODOMETER_BUFFER: workOrderStatusColors.pending,
+  ODOMETER_BUFFER: workOrderStatusColors.due,
   FUEL_ANOMALY: workOrderStatusColors.overdue,
   ESCALATION: { backgroundColor: "#fff7ed", borderColor: "#c2410c" },
   CRITICAL_ESCALATION: { backgroundColor: "#fff1f2", borderColor: "#b91c1c" },
@@ -97,6 +97,7 @@ export function NotificationsScreen({ notifications, loading, error, onRefresh, 
   return (
     <ScrollView testID="notifications-scroll-view" contentContainerStyle={styles.container} refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={() => { void handlePullRefresh().catch(() => undefined); }} colors={["#1a1f6e", "#d4a93f"]} tintColor="#1a1f6e" progressBackgroundColor="#ffffff" />}>
       <MobilePageHeader title="Notifications" subtitle="Maintenance updates and alerts" />
+      <MaintenanceStatusLegend />
       {shouldShowFuelAnomalyApprovalPanel(accessRole) ? (
         <View style={styles.approvalSection}>
           <Text style={styles.sectionTitle}>Critical Fuel Anomalies</Text>

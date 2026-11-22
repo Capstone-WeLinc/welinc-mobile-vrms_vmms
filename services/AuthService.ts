@@ -34,6 +34,28 @@ export interface MobileUserSummary {
   temporaryRoles?: string[];
 }
 
+export interface MaintenanceScheduleExtensionRequest {
+  id: string;
+  actorName: string;
+  requestedDueDate: string;
+  reason: string;
+  reviewStatus: "PENDING" | "APPROVED" | "REJECTED";
+  reviewedByName: string | null;
+  reviewReason: string | null;
+  requestedAt: string;
+  reviewedAt: string | null;
+}
+
+export interface MaintenanceScheduleExtensionHistory {
+  currentTargetDueDate: string | null;
+  requests: MaintenanceScheduleExtensionRequest[];
+}
+
+export interface CreatedMaintenanceScheduleExtension
+  extends Omit<MaintenanceScheduleExtensionRequest, "reviewedByName" | "reviewReason" | "reviewedAt"> {
+  scheduleId: string;
+}
+
 interface BackendUserSummary {
   id?: unknown;
   userId?: unknown;
@@ -297,6 +319,32 @@ export class AuthService {
     if (!token) throw new Error("Please log in again.");
     const response = await this.api.patch(
       `/maintenance-schedules/${scheduleId}/progress`, progress,
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+    return response.data;
+  }
+
+  async requestMaintenanceScheduleExtension(
+    scheduleId: string,
+    input: { requestedDueDate: string; reason: string },
+  ): Promise<CreatedMaintenanceScheduleExtension> {
+    const token = await this.getAccessToken();
+    if (!token) throw new Error("Please log in again.");
+    const response = await this.api.post<CreatedMaintenanceScheduleExtension>(
+      `/maintenance-schedules/${encodeURIComponent(scheduleId)}/extensions`,
+      { requestedDueDate: input.requestedDueDate, reason: input.reason.trim() },
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+    return response.data;
+  }
+
+  async getMaintenanceScheduleExtensionHistory(
+    scheduleId: string,
+  ): Promise<MaintenanceScheduleExtensionHistory> {
+    const token = await this.getAccessToken();
+    if (!token) throw new Error("Please log in again.");
+    const response = await this.api.get<MaintenanceScheduleExtensionHistory>(
+      `/maintenance-schedules/${encodeURIComponent(scheduleId)}/extensions`,
       { headers: { Authorization: `Bearer ${token}` } },
     );
     return response.data;

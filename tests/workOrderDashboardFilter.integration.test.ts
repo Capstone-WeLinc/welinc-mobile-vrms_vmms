@@ -10,6 +10,8 @@ function order(
 
 test("matches the dashboard pending and review status groups", () => {
   expect(matchesWorkOrderDashboardFilter(order("Pending"), "Pending", null)).toBe(true);
+  expect(matchesWorkOrderDashboardFilter(order("Due"), "Due", null)).toBe(true);
+  expect(matchesWorkOrderDashboardFilter(order("Due"), "Pending", null)).toBe(false);
   expect(matchesWorkOrderDashboardFilter(order("Cancelled"), "Pending", null)).toBe(false);
   expect(matchesWorkOrderDashboardFilter(order("Done"), "Awaiting Review", null)).toBe(true);
   expect(matchesWorkOrderDashboardFilter(order("In Progress", true), "Awaiting Review", null)).toBe(true);

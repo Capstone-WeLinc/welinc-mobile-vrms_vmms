@@ -1,5 +1,6 @@
 export const dashboardWorkOrderStatuses = [
   "Pending",
+  "Due",
   "In Progress",
   "Overdue",
   "Awaiting Review",
@@ -40,12 +41,14 @@ export function matchesWorkOrderDashboardFilter(
           "For Repair",
           "Done",
           "For Verification",
+          "Due",
           "In Progress",
           "Overdue",
           "Cancelled",
         ].includes(order.status) &&
         !order.mechanicSubmitted
       );
+    case "Due":
     case "In Progress":
     case "Overdue":
     case "Completed":
