@@ -12,7 +12,11 @@ import {
 } from "./workOrderSubmission";
 import { isWorkOrderStartDateReached } from "./workOrderStartDate";
 import { getPersistedWorkOrderNumber } from "./workOrderId";
-import { isAwaitingChiefReview, submittedReviewState } from "./workOrderReview";
+import {
+  canOpenWorkOrder,
+  isAwaitingChiefReview,
+  submittedReviewState,
+} from "./workOrderReview";
 import { sortWorkOrdersForQueue } from "./workOrderPriority";
 import {
   dashboardWorkOrderStatuses,
@@ -27,6 +31,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  KeyboardAvoidingView,
   Image,
   Linking,
   Modal,
@@ -54,6 +59,7 @@ import type {
   MobileAccessRole,
 } from "../services/AuthService";
 import { API_BASE_URL, AuthService } from "../services/AuthService";
+import { useSearchHistory } from "../services/useSearchHistory";
 import {
   WorkOrderAnalyticsService,
   type WorkOrderRecommendationsResponse,
@@ -527,6 +533,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
   const [pullRefreshing, setPullRefreshing] = useState(false);
   const [reloadVersion, setReloadVersion] = useState(0);
   const [searchQuery, setSearchQuery] = useState("");
+  const searchHistory = useSearchHistory(user.id, "work-orders");
   const [showFilters, setShowFilters] = useState(false);
   const [openFilterMenu, setOpenFilterMenu] = useState<"status" | "type" | "priority" | null>(null);
   const [statusFilter, setStatusFilter] = useState<string | null>(
@@ -544,6 +551,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
   const [currentPage, setCurrentPage] = useState(1);
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [activeStep, setActiveStep] = useState<StepKey>("details");
+  const detailScrollRef = useRef<ScrollView | null>(null);
   const [extensionPanelOpen, setExtensionPanelOpen] = useState(false);
   const [extensionHistory, setExtensionHistory] =
     useState<MaintenanceScheduleExtensionHistory | null>(null);
@@ -787,9 +795,11 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
         if (!mounted) return;
         setWorkOrders(converted);
         if (initialOrderId) {
-          const target = converted.find((order) => order.id === initialOrderId &&
-            (accessRole === "mechanic" ? order.assignedMechanicId === user.id :
-              accessRole === "chiefMechanic" && isAwaitingChiefReview(order, user.id)));
+          const target = converted.find(
+            (order) =>
+              order.id === initialOrderId &&
+              canOpenWorkOrder(order, accessRole, user.id),
+          );
           if (target) {
             setSelectedOrderId(target.id);
             setActiveStep("details");
@@ -1188,6 +1198,11 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
     return { completed, total, percent: total ? Math.round((completed / total) * 100) : 0 };
   };
   useEffect(() => {
+    if (!selectedOrderId) return;
+    detailScrollRef.current?.scrollTo({ y: 0, animated: false });
+  }, [activeStep, selectedOrderId]);
+
+  useEffect(() => {
     // Reset pagination when filters change so results start on the first page.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setCurrentPage(1);
@@ -1562,6 +1577,17 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
     setActivePartSuggestionItemId(null);
     setSelectedOrderId(orderId);
     setActiveStep("details");
+  };
+
+  const openSearchedOrder = async (orderId: string) => {
+    const historySaved = await searchHistory.recordSearch(searchQuery);
+    if (!historySaved) {
+      Alert.alert(
+        "Search history unavailable",
+        "The work order will open, but this search could not be saved.",
+      );
+    }
+    openOrder(orderId);
   };
 
   const isMechanicRole = accessRole === "mechanic";
@@ -2088,7 +2114,10 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
         !extensionSubmitting,
     );
     return (
-      <View style={styles.container}>
+      <KeyboardAvoidingView
+        style={styles.container}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+      >
         <Modal
           visible={previewAttachmentUri !== null}
           transparent
@@ -2166,7 +2195,11 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
         </View>
 
         <ScrollView
+          ref={detailScrollRef}
+          style={styles.detailScroll}
           contentContainerStyle={styles.detailContent}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
           refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={refreshWorkOrders} colors={["#1a1f6e", "#d4a93f"]} tintColor="#1a1f6e" progressBackgroundColor="#ffffff" />}
         >
           {/* Step 1: Details */}
@@ -2970,12 +3003,18 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
           </TouchableOpacity>
           : null}
         </View>
-      </View>
+      </KeyboardAvoidingView>
     );
   }
 
   return (
-    <View style={styles.container}>
+    <ScrollView
+      style={styles.listPageScroll}
+      contentContainerStyle={styles.listPageContent}
+      keyboardShouldPersistTaps="handled"
+      keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+      refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={refreshWorkOrders} colors={["#1a1f6e", "#d4a93f"]} tintColor="#1a1f6e" progressBackgroundColor="#ffffff" />}
+    >
       <View style={styles.pageHeader}>
         <MobilePageHeader
           title="Work Orders"
@@ -3012,15 +3051,36 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
       ) : null}
 
       <View style={styles.searchRow}>
-        <TextInput
-          style={styles.searchInput}
-          value={searchQuery}
-          onChangeText={setSearchQuery}
-          accessibilityLabel="Search work orders by number, plate, task, or mechanic"
-          autoCapitalize="none"
-          placeholder="Search vehicle, task, or mechanic…"
-          placeholderTextColor="#94a3b8"
-        />
+        <View style={styles.searchInputWrap}>
+          <TextInput
+            style={styles.searchInput}
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            onSubmitEditing={() => void searchHistory.recordSearch(searchQuery)}
+            accessibilityLabel="Search work orders by number, plate, task, or mechanic"
+            autoCapitalize="none"
+            placeholder="Search vehicle, task, or mechanic…"
+            placeholderTextColor="#94a3b8"
+            returnKeyType="search"
+          />
+          {searchQuery ? (
+            <TouchableOpacity
+              accessibilityRole="button"
+              accessibilityLabel="Clear work order search text"
+              onPress={() => setSearchQuery("")}
+              style={styles.searchClearButton}
+            >
+              <Svg width={18} height={18} viewBox="0 0 24 24" fill="none">
+                <Path
+                  d="m6 6 12 12M18 6 6 18"
+                  stroke="#64748b"
+                  strokeWidth={2}
+                  strokeLinecap="round"
+                />
+              </Svg>
+            </TouchableOpacity>
+          ) : null}
+        </View>
         <TouchableOpacity style={styles.filterButton} onPress={() => setShowFilters((value) => !value)}
           accessibilityRole="button" accessibilityLabel="Toggle work order filters" accessibilityState={{ expanded: showFilters }}>
           <Svg width={26} height={26} viewBox="0 0 24 24" fill="none" accessibilityLabel="Filter">
@@ -3035,6 +3095,48 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
           {statusFilter || mechanicFilterId || typeFilter || priorityFilter ? <View style={styles.activeFilterDot} /> : null}
         </TouchableOpacity>
       </View>
+
+      {searchHistory.error ? (
+        <Text accessibilityRole="alert" style={styles.searchHistoryError}>
+          {searchHistory.error}
+        </Text>
+      ) : null}
+      {!searchQuery.trim() ? (
+        <View style={styles.searchHistorySection}>
+          <View style={styles.searchHistoryHeader}>
+            <Text style={styles.searchHistoryHeading}>Recent searches</Text>
+            {searchHistory.items.length > 0 ? (
+              <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityLabel="Clear work order search history"
+                onPress={() => void searchHistory.clearHistory()}
+                style={styles.searchHistoryClear}
+              >
+                <Text style={styles.searchHistoryClearText}>Clear</Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
+          {searchHistory.loading ? (
+            <Text style={styles.searchHistoryStatus}>Loading recent searches…</Text>
+          ) : searchHistory.error ? null : searchHistory.items.length > 0 ? (
+            searchHistory.items.map((query, index) => (
+              <TouchableOpacity
+                key={`${query}-${index}`}
+                accessibilityRole="button"
+                accessibilityLabel={`Search work orders for ${query}`}
+                onPress={() => setSearchQuery(query)}
+                style={styles.searchHistoryItem}
+              >
+                <Text numberOfLines={1} style={styles.searchHistoryText}>
+                  {query}
+                </Text>
+              </TouchableOpacity>
+            ))
+          ) : (
+            <Text style={styles.searchHistoryStatus}>No recent searches yet.</Text>
+          )}
+        </View>
+      ) : null}
 
       {showFilters && (
         <View style={styles.filterPanel}>
@@ -3089,10 +3191,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
         {filtersActive && <TouchableOpacity onPress={clearFilters} accessibilityRole="button"><Text style={{ color: "#1a1f6e", fontWeight: "700" }}>Clear filters</Text></TouchableOpacity>}
       </View>
 
-      <ScrollView
-        contentContainerStyle={styles.listContent}
-        refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={refreshWorkOrders} colors={["#1a1f6e", "#d4a93f"]} tintColor="#1a1f6e" progressBackgroundColor="#ffffff" />}
-      >
+      <View style={styles.listContent}>
         {isLoading ? (
           <View style={styles.emptyStateCard}>
             <Text style={styles.emptyStateTitle}>Loading work orders…</Text>
@@ -3113,7 +3212,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
                 <Pressable
                   key={order.id}
                   style={styles.orderCard}
-                  onPress={() => openOrder(order.id)}
+                  onPress={() => void openSearchedOrder(order.id)}
                 >
                   <View style={styles.orderCardHeader}>
                     <Text style={styles.orderNumber}>{order.number}</Text>
@@ -3189,8 +3288,8 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
             </TouchableOpacity>
           </View>
         ) : null}
-      </ScrollView>
-    </View>
+      </View>
+    </ScrollView>
   );
 }
 
@@ -3217,6 +3316,9 @@ const styles = StyleSheet.create({
   filterOptionTextSelected: { color: "#1a1f6e", fontWeight: "700" },
   filterOptionCheck: { color: "#1a1f6e", fontWeight: "800", fontSize: 16 },
   container: { flex: 1, backgroundColor: "#f1f5f9", padding: 16 },
+  listPageScroll: { flex: 1, backgroundColor: "#f1f5f9" },
+  listPageContent: { flexGrow: 1, padding: 16, paddingBottom: 24 },
+  detailScroll: { flex: 1 },
   pageHeader: {
     marginBottom: 12,
   },
@@ -3226,17 +3328,77 @@ const styles = StyleSheet.create({
     gap: 8,
     marginBottom: 12,
   },
+  searchInputWrap: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    borderRadius: 12,
+    backgroundColor: "#ffffff",
+    paddingLeft: 14,
+  },
   prioritySortHint: { color: "#64748b", fontSize: 12, marginTop: -8, marginBottom: 8 },
   searchInput: {
     flex: 1,
-    backgroundColor: "#ffffff",
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#e2e8f0",
-    paddingHorizontal: 14,
+    minWidth: 0,
+    paddingHorizontal: 0,
     paddingVertical: 12,
     color: "#0d0d0d",
     fontSize: 14,
+  },
+  searchClearButton: {
+    minWidth: 44,
+    minHeight: 44,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  searchHistorySection: {
+    marginTop: -4,
+    marginBottom: 12,
+  },
+  searchHistoryHeader: {
+    minHeight: 40,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  searchHistoryHeading: {
+    color: "#334155",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  searchHistoryClear: {
+    minHeight: 44,
+    justifyContent: "center",
+    paddingHorizontal: 8,
+  },
+  searchHistoryClearText: {
+    color: "#1a1f6e",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  searchHistoryItem: {
+    minHeight: 44,
+    justifyContent: "center",
+    paddingHorizontal: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: "#e2e8f0",
+  },
+  searchHistoryText: {
+    color: "#334155",
+    fontSize: 14,
+  },
+  searchHistoryStatus: {
+    color: "#64748b",
+    fontSize: 13,
+    paddingVertical: 8,
+  },
+  searchHistoryError: {
+    color: "#a32121",
+    fontSize: 13,
+    lineHeight: 18,
+    marginBottom: 8,
   },
   filterButton: {
     width: 44,
