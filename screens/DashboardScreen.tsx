@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { Ionicons } from "@expo/vector-icons";
 import {
   Pressable,
   RefreshControl,
@@ -33,6 +34,11 @@ type MechanicPerformanceSummary = {
   returned: number;
   checklistItemsDone: number;
   checklistItemsTotal: number;
+};
+
+type MechanicWorkMetric = {
+  label: DashboardWorkOrderStatus;
+  value: number;
 };
 
 function getScheduleWorkflowStatus(schedule: MaintenanceSchedule, progress: Record<string, unknown>): string {
@@ -107,6 +113,23 @@ function summarizeMechanicWork(schedules: MaintenanceSchedule[]): MechanicPerfor
   return Array.from(summaries.values()).sort((left, right) => left.mechanic.localeCompare(right.mechanic));
 }
 
+function getMechanicWorkMetrics(
+  summary: MechanicPerformanceSummary,
+  prioritizeReview = false,
+): MechanicWorkMetric[] {
+  const pending = { label: "Pending", value: summary.pending } satisfies MechanicWorkMetric;
+  const due = { label: "Due", value: summary.due } satisfies MechanicWorkMetric;
+  const inProgress = { label: "In Progress", value: summary.inProgress } satisfies MechanicWorkMetric;
+  const overdue = { label: "Overdue", value: summary.overdue } satisfies MechanicWorkMetric;
+  const awaitingReview = { label: "Awaiting Review", value: summary.awaitingReview } satisfies MechanicWorkMetric;
+  const completed = { label: "Completed", value: summary.completed } satisfies MechanicWorkMetric;
+  const returned = { label: "Returned", value: summary.returned } satisfies MechanicWorkMetric;
+
+  return prioritizeReview
+    ? [awaitingReview, overdue, inProgress, due, pending, returned, completed]
+    : [pending, due, inProgress, overdue, awaitingReview, completed, returned];
+}
+
 interface DashboardScreenProps {
   user: AuthenticatedUser;
   syncService: SyncService;
@@ -125,6 +148,7 @@ export function DashboardScreen({
   const [schedules, setSchedules] = useState<MaintenanceSchedule[]>([]);
   const [pullRefreshing, setPullRefreshing] = useState(false);
   const [lastSync, setLastSync] = useState<string | null>(null);
+  const [expandedMechanicId, setExpandedMechanicId] = useState<string | null>(null);
   const [syncState, setSyncState] = useState<
     "starting" | "online" | "offline" | "error"
   >("starting");
@@ -200,7 +224,12 @@ export function DashboardScreen({
       }
     >
       <View style={styles.header}>
-        <MobilePageHeader title="Dashboard" subtitle="Maintenance overview" />
+        <MobilePageHeader
+          title="Dashboard"
+          subtitle={isChiefMechanic
+            ? "Your assigned mechanics."
+            : "Your maintenance work and checklist progress."}
+        />
 
         <View
           style={[styles.status, syncState === "error" && styles.statusError]}
@@ -223,70 +252,203 @@ export function DashboardScreen({
         </View>
 
         {canViewPerformance ? (
-            <View style={styles.performanceSection}>
-              <Text style={styles.sectionTitle}>{isChiefMechanic ? "Mechanic Performance" : "Work Order Overview"}</Text>
-              <Text style={styles.performanceSubtitle}>
-                {isChiefMechanic
-                  ? "Progress for Mechanics assigned to your schedules."
-                  : "Your work-order progress and checklist completion."}
-              </Text>
-              <MaintenanceStatusLegend />
-              {mechanicPerformance.length === 0 ? (
-                <Text style={styles.emptyCard}>
-                  {isChiefMechanic ? "No assigned Mechanic work is available yet." : "You have no assigned work orders yet."}
-                </Text>
-              ) : mechanicPerformance.map((summary) => {
-                const checklistPercent = summary.checklistItemsTotal
-                  ? Math.round((summary.checklistItemsDone / summary.checklistItemsTotal) * 100)
-                  : 0;
-                return (
-                  <View key={summary.key} style={styles.performanceCard}>
-                    <View style={styles.performanceCardHeader}>
-                      {isChiefMechanic ? <Text style={styles.performanceMechanicName}>{summary.mechanic}</Text> : null}
-                      <Text style={styles.performanceOrderCount}>{summary.totalOrders} work orders</Text>
-                    </View>
-                    <View style={styles.performanceMetrics}>
-                      {([
-                        { label: "Pending", value: summary.pending },
-                        { label: "Due", value: summary.due },
-                        { label: "In Progress", value: summary.inProgress },
-                        { label: "Overdue", value: summary.overdue },
-                        { label: "Awaiting Review", value: summary.awaitingReview },
-                        { label: "Completed", value: summary.completed },
-                        { label: "Returned", value: summary.returned },
-                      ] as { label: DashboardWorkOrderStatus; value: number }[]).map((metric) => (
+          <View style={styles.performanceSection}>
+            <Text style={styles.sectionTitle}>
+              {isChiefMechanic ? "Assigned Mechanics" : "Work Order Overview"}
+            </Text>
+            <Text style={styles.performanceSubtitle}>
+              {isChiefMechanic
+                ? "Select a mechanic to view work-order and checklist details."
+                : "Your work-order progress and checklist completion."}
+            </Text>
+            {isChiefMechanic ? (
+              mechanicPerformance.length === 0 ? (
+                <Text style={styles.emptyCard}>No mechanics are assigned to your schedules yet.</Text>
+              ) : (
+                <View style={styles.mechanicNameList}>
+                  {mechanicPerformance.map((summary) => {
+                    const isExpanded = expandedMechanicId === summary.key;
+                    const checklistPercent = summary.checklistItemsTotal
+                      ? Math.round(
+                          (summary.checklistItemsDone / summary.checklistItemsTotal) * 100,
+                        )
+                      : 0;
+
+                    return (
+                      <View key={summary.key} style={styles.mechanicDropdown}>
                         <Pressable
-                          key={metric.label}
                           accessibilityRole="button"
-                          accessibilityLabel={`Open ${metric.label} work orders, ${metric.value} total`}
+                          accessibilityLabel={`${isExpanded ? "Hide" : "Show"} details for ${summary.mechanic}`}
+                          accessibilityState={{ expanded: isExpanded }}
                           onPress={() =>
-                            onOpenWorkOrders({
-                              status: metric.label,
-                              mechanicId: isChiefMechanic ? summary.key : null,
-                              mechanicName: isChiefMechanic ? summary.mechanic : null,
-                            })
+                            setExpandedMechanicId((current) =>
+                              current === summary.key ? null : summary.key,
+                            )
                           }
                           style={({ pressed }) => [
-                            styles.performanceMetric,
-                            getDashboardMetricColors(metric.label).container,
+                            styles.mechanicNameRow,
                             pressed && styles.performanceMetricPressed,
                           ]}
                         >
-                          <Text style={[styles.performanceMetricValue, { color: getDashboardMetricColors(metric.label).text }]}>{metric.value}</Text>
-                          <Text style={[styles.performanceMetricLabel, { color: getDashboardMetricColors(metric.label).text }]}>{metric.label}</Text>
+                          <Text style={styles.mechanicName}>{summary.mechanic}</Text>
+                          <Ionicons
+                            name={isExpanded ? "chevron-up" : "chevron-down"}
+                            size={18}
+                            color="#1a1f6e"
+                          />
                         </Pressable>
-                      ))}
-                    </View>
-                    <View style={styles.performanceChecklistRow}>
-                      <Text style={styles.performanceMetricLabel}>Checklist items complete</Text>
-                      <Text style={styles.performanceChecklistValue}>
-                        {summary.checklistItemsDone}/{summary.checklistItemsTotal} ({checklistPercent}%)
-                      </Text>
-                    </View>
-                  </View>
-                );
-              })}
-            </View>
+                        {isExpanded ? (
+                          <View style={styles.mechanicDropdownDetails}>
+                            <Text style={styles.performanceOrderCount}>
+                              {summary.totalOrders} work orders
+                            </Text>
+                            <View style={styles.performanceChecklist}>
+                              <View style={styles.performanceChecklistRow}>
+                                <Text style={styles.mechanicDetailSectionTitle}>
+                                  Checklist progress
+                                </Text>
+                                <Text style={styles.performanceChecklistValue}>
+                                  {summary.checklistItemsTotal > 0
+                                    ? `${summary.checklistItemsDone}/${summary.checklistItemsTotal} (${checklistPercent}%)`
+                                    : "No checklist items"}
+                                </Text>
+                              </View>
+                              {summary.checklistItemsTotal > 0 ? (
+                                <View style={styles.performanceChecklistTrack}>
+                                  <View
+                                    style={[
+                                      styles.performanceChecklistFill,
+                                      { width: `${checklistPercent}%` },
+                                    ]}
+                                  />
+                                </View>
+                              ) : null}
+                            </View>
+                            <Text style={styles.mechanicDetailSectionTitle}>
+                              Work order status
+                            </Text>
+                            <View style={styles.performanceMetrics}>
+                              {getMechanicWorkMetrics(summary, true).map((metric) => {
+                                const colors = getDashboardMetricColors(metric.label);
+                                return (
+                                  <Pressable
+                                    key={metric.label}
+                                    accessibilityRole="button"
+                                    accessibilityLabel={`Open ${metric.label} work orders for ${summary.mechanic}, ${metric.value} total`}
+                                    onPress={() => {
+                                      setExpandedMechanicId(null);
+                                      onOpenWorkOrders({
+                                        status: metric.label,
+                                        mechanicId: summary.key,
+                                        mechanicName: summary.mechanic,
+                                      });
+                                    }}
+                                    style={({ pressed }) => [
+                                      styles.performanceMetric,
+                                      styles.chiefPerformanceMetric,
+                                      colors.container,
+                                      pressed && styles.performanceMetricPressed,
+                                    ]}
+                                  >
+                                    <Text
+                                      style={[
+                                        styles.performanceMetricValue,
+                                        { color: colors.text },
+                                      ]}
+                                    >
+                                      {metric.value}
+                                    </Text>
+                                    <Text
+                                      style={[
+                                        styles.performanceMetricLabel,
+                                        { color: colors.text },
+                                      ]}
+                                    >
+                                      {metric.label}
+                                    </Text>
+                                  </Pressable>
+                                );
+                              })}
+                            </View>
+                          </View>
+                        ) : null}
+                      </View>
+                    );
+                  })}
+                </View>
+              )
+            ) : (
+              <>
+                <MaintenanceStatusLegend />
+                {mechanicPerformance.length === 0 ? (
+                  <Text style={styles.emptyCard}>You have no assigned work orders yet.</Text>
+                ) : mechanicPerformance.map((summary) => {
+                    const checklistPercent = summary.checklistItemsTotal
+                      ? Math.round((summary.checklistItemsDone / summary.checklistItemsTotal) * 100)
+                      : 0;
+                    const metrics = getMechanicWorkMetrics(summary);
+                    return (
+                      <View key={summary.key} style={styles.performanceCard}>
+                        <View style={styles.performanceCardHeader}>
+                          <Text style={styles.performanceOrderCount}>{summary.totalOrders} work orders</Text>
+                        </View>
+                        <View style={styles.performanceMetrics}>
+                          {metrics.map((metric) => {
+                            const colors = getDashboardMetricColors(metric.label);
+                            return (
+                              <Pressable
+                                key={metric.label}
+                                accessibilityRole="button"
+                                accessibilityLabel={`Open ${metric.label} work orders, ${metric.value} total`}
+                                onPress={() =>
+                                  onOpenWorkOrders({
+                                    status: metric.label,
+                                    mechanicId: null,
+                                    mechanicName: null,
+                                  })
+                                }
+                                style={({ pressed }) => [
+                                  styles.performanceMetric,
+                                  colors.container,
+                                  pressed && styles.performanceMetricPressed,
+                                ]}
+                              >
+                                <Text style={[styles.performanceMetricValue, { color: colors.text }]}>
+                                  {metric.value}
+                                </Text>
+                                <Text style={[styles.performanceMetricLabel, { color: colors.text }]}>
+                                  {metric.label}
+                                </Text>
+                              </Pressable>
+                            );
+                          })}
+                        </View>
+                        <View style={styles.performanceChecklist}>
+                          <View style={styles.performanceChecklistRow}>
+                            <Text style={styles.performanceMetricLabel}>Checklist progress</Text>
+                            <Text style={styles.performanceChecklistValue}>
+                              {summary.checklistItemsTotal > 0
+                                ? `${summary.checklistItemsDone}/${summary.checklistItemsTotal} (${checklistPercent}%)`
+                                : "No checklist items"}
+                            </Text>
+                          </View>
+                          {summary.checklistItemsTotal > 0 ? (
+                            <View style={styles.performanceChecklistTrack}>
+                              <View
+                                style={[
+                                  styles.performanceChecklistFill,
+                                  { width: `${checklistPercent}%` },
+                                ]}
+                              />
+                            </View>
+                          ) : null}
+                        </View>
+                      </View>
+                    );
+                  })}
+              </>
+            )}
+          </View>
         ) : null}
       </View>
     </ScrollView>
@@ -322,17 +484,50 @@ const styles = StyleSheet.create({
   error: { color: "#ef4444", fontSize: 12, marginTop: 4 },
   performanceSection: { gap: 10 },
   performanceSubtitle: { color: "#64748b", fontSize: 12, lineHeight: 17 },
+  mechanicNameList: { gap: 8 },
+  mechanicDropdown: {
+    backgroundColor: "#ffffff",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    overflow: "hidden",
+  },
+  mechanicNameRow: {
+    minHeight: 52,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 14,
+  },
+  mechanicName: { flex: 1, color: "#0d0d0d", fontSize: 15, fontWeight: "700" },
+  mechanicDropdownDetails: {
+    borderTopWidth: 1,
+    borderTopColor: "#e2e8f0",
+    padding: 12,
+    gap: 12,
+  },
+  mechanicDetailSectionTitle: { color: "#0d0d0d", fontSize: 14, fontWeight: "800" },
   emptyCard: { color: "#64748b", backgroundColor: "#ffffff", borderRadius: 12, padding: 12, fontSize: 12 },
   performanceCard: { backgroundColor: "#ffffff", borderRadius: 12, borderWidth: 1, borderColor: "#e2e8f0", padding: 12, gap: 10 },
   performanceCardHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 8 },
-  performanceMechanicName: { color: "#1a1f6e", fontWeight: "800", fontSize: 14, flex: 1 },
   performanceOrderCount: { color: "#64748b", fontSize: 11, fontWeight: "700" },
   performanceMetrics: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   performanceMetric: { width: "48%", backgroundColor: "#f8fafc", borderRadius: 8, padding: 8 },
+  chiefPerformanceMetric: {
+    minHeight: 48,
+    paddingHorizontal: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 6,
+  },
   performanceMetricPressed: { opacity: 0.72 },
   performanceMetricValue: { color: "#0f172a", fontWeight: "800", fontSize: 16 },
   performanceMetricLabel: { color: "#64748b", fontSize: 10, fontWeight: "700" },
   performanceChecklistRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   performanceChecklistValue: { color: "#1a1f6e", fontSize: 11, fontWeight: "800" },
+  performanceChecklist: { gap: 6 },
+  performanceChecklistTrack: { height: 6, borderRadius: 99, overflow: "hidden", backgroundColor: "#e2e8f0" },
+  performanceChecklistFill: { height: "100%", borderRadius: 99, backgroundColor: "#1a1f6e" },
   sectionTitle: { fontSize: 18, fontWeight: "700", color: "#0d0d0d" },
 });

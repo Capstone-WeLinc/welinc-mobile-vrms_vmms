@@ -549,6 +549,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialSelec
   const [reloadVersion, setReloadVersion] = useState(0);
   const [searchQuery, setSearchQuery] = useState("");
   const searchHistory = useSearchHistory(user.id, "work-orders");
+  const [recentSearchesExpanded, setRecentSearchesExpanded] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
   const [openFilterMenu, setOpenFilterMenu] = useState<"status" | "type" | "priority" | null>(null);
   const [statusFilter, setStatusFilter] = useState<string | null>(
@@ -562,7 +563,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialSelec
   );
   const [typeFilter, setTypeFilter] = useState<string | null>(null);
   const [priorityFilter, setPriorityFilter] = useState<string | null>(null);
-  const [chiefQueueMode, setChiefQueueMode] = useState<"monitoring" | "review">("monitoring");
+  const [chiefQueueMode, setChiefQueueMode] = useState<"monitoring" | "review" | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(
     initialSelectedOrderId ?? initialOrderId ?? null,
@@ -1220,10 +1221,15 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialSelec
 
   const chiefSupervisedOrders = workOrders.filter((order) => order.chiefMechanicId === user.id);
   const chiefReviewOrders = chiefSupervisedOrders.filter((order) => isAwaitingChiefReview(order, user.id));
+  const activeChiefQueueMode =
+    chiefQueueMode ??
+    (initialDashboardFilter
+      ? initialDashboardFilter.status === "Awaiting Review" ? "review" : "monitoring"
+      : chiefReviewOrders.length > 0 ? "review" : "monitoring");
   const visibleOrders = accessRole === "mechanic"
     ? workOrders.filter((order) => order.assignedMechanicId === user.id)
     : accessRole === "chiefMechanic"
-      ? chiefQueueMode === "review" ? chiefReviewOrders : chiefSupervisedOrders
+      ? activeChiefQueueMode === "review" ? chiefReviewOrders : chiefSupervisedOrders
       : [];
   const statusOptions = [
     ...new Set([
@@ -3443,32 +3449,34 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialSelec
         <MobilePageHeader
           title="Work Orders"
           subtitle={isChiefMechanicRole
-            ? "Monitor mechanic progress and review completed submissions"
+            ? "Review mechanic submissions and monitor supervised work"
             : "Your assigned work orders grouped by mechanic"}
         />
       </View>
-      <MaintenanceStatusLegend />
+      {!isChiefMechanicRole ? <MaintenanceStatusLegend /> : null}
 
       {isChiefMechanicRole ? (
         <View style={styles.chiefQueueToggle}>
           <TouchableOpacity
-            style={[styles.chiefQueueTab, chiefQueueMode === "monitoring" && styles.chiefQueueTabActive]}
-            onPress={() => { setChiefQueueMode("monitoring"); setCurrentPage(1); }}
+            style={[styles.chiefQueueTab, activeChiefQueueMode === "review" && styles.chiefQueueTabActive]}
+            onPress={() => { setChiefQueueMode("review"); setCurrentPage(1); }}
             accessibilityRole="tab"
-            accessibilityState={{ selected: chiefQueueMode === "monitoring" }}
+            accessibilityState={{ selected: activeChiefQueueMode === "review" }}
+            accessibilityLabel={`Needs review, ${chiefReviewOrders.length} submissions`}
           >
-            <Text style={[styles.chiefQueueTabText, chiefQueueMode === "monitoring" && styles.chiefQueueTabTextActive]}>
-              Monitoring ({chiefSupervisedOrders.length})
+            <Text style={[styles.chiefQueueTabText, activeChiefQueueMode === "review" && styles.chiefQueueTabTextActive]}>
+              Needs review ({chiefReviewOrders.length})
             </Text>
           </TouchableOpacity>
           <TouchableOpacity
-            style={[styles.chiefQueueTab, chiefQueueMode === "review" && styles.chiefQueueTabActive]}
-            onPress={() => { setChiefQueueMode("review"); setCurrentPage(1); }}
+            style={[styles.chiefQueueTab, activeChiefQueueMode === "monitoring" && styles.chiefQueueTabActive]}
+            onPress={() => { setChiefQueueMode("monitoring"); setCurrentPage(1); }}
             accessibilityRole="tab"
-            accessibilityState={{ selected: chiefQueueMode === "review" }}
+            accessibilityState={{ selected: activeChiefQueueMode === "monitoring" }}
+            accessibilityLabel={`All supervised, ${chiefSupervisedOrders.length} work orders`}
           >
-            <Text style={[styles.chiefQueueTabText, chiefQueueMode === "review" && styles.chiefQueueTabTextActive]}>
-              Awaiting Review ({chiefReviewOrders.length})
+            <Text style={[styles.chiefQueueTabText, activeChiefQueueMode === "monitoring" && styles.chiefQueueTabTextActive]}>
+              All supervised ({chiefSupervisedOrders.length})
             </Text>
           </TouchableOpacity>
         </View>
@@ -3528,8 +3536,23 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialSelec
       {!searchQuery.trim() ? (
         <View style={styles.searchHistorySection}>
           <View style={styles.searchHistoryHeader}>
-            <Text style={styles.searchHistoryHeading}>Recent searches</Text>
-            {searchHistory.items.length > 0 ? (
+            {isChiefMechanicRole ? (
+              <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityLabel={recentSearchesExpanded ? "Hide recent searches" : "Show recent searches"}
+                accessibilityState={{ expanded: recentSearchesExpanded }}
+                onPress={() => setRecentSearchesExpanded((expanded) => !expanded)}
+                style={styles.searchHistoryExpandButton}
+              >
+                <Text style={styles.searchHistoryHeading}>Recent searches</Text>
+                <Text style={styles.searchHistoryExpandText}>
+                  {recentSearchesExpanded ? "Hide" : "Show"}
+                </Text>
+              </TouchableOpacity>
+            ) : (
+              <Text style={styles.searchHistoryHeading}>Recent searches</Text>
+            )}
+            {(!isChiefMechanicRole || recentSearchesExpanded) && searchHistory.items.length > 0 ? (
               <TouchableOpacity
                 accessibilityRole="button"
                 accessibilityLabel="Clear work order search history"
@@ -3540,25 +3563,27 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialSelec
               </TouchableOpacity>
             ) : null}
           </View>
-          {searchHistory.loading ? (
-            <Text style={styles.searchHistoryStatus}>Loading recent searches…</Text>
-          ) : searchHistory.error ? null : searchHistory.items.length > 0 ? (
-            searchHistory.items.map((query, index) => (
-              <TouchableOpacity
-                key={`${query}-${index}`}
-                accessibilityRole="button"
-                accessibilityLabel={`Search work orders for ${query}`}
-                onPress={() => setSearchQuery(query)}
-                style={styles.searchHistoryItem}
-              >
-                <Text numberOfLines={1} style={styles.searchHistoryText}>
-                  {query}
-                </Text>
-              </TouchableOpacity>
-            ))
-          ) : (
-            <Text style={styles.searchHistoryStatus}>No recent searches yet.</Text>
-          )}
+          {(!isChiefMechanicRole || recentSearchesExpanded) ? (
+            searchHistory.loading ? (
+              <Text style={styles.searchHistoryStatus}>Loading recent searches…</Text>
+            ) : searchHistory.error ? null : searchHistory.items.length > 0 ? (
+              searchHistory.items.map((query, index) => (
+                <TouchableOpacity
+                  key={`${query}-${index}`}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Search work orders for ${query}`}
+                  onPress={() => setSearchQuery(query)}
+                  style={styles.searchHistoryItem}
+                >
+                  <Text numberOfLines={1} style={styles.searchHistoryText}>
+                    {query}
+                  </Text>
+                </TouchableOpacity>
+              ))
+            ) : (
+              <Text style={styles.searchHistoryStatus}>No recent searches yet.</Text>
+            )
+          ) : null}
         </View>
       ) : null}
 
@@ -3611,7 +3636,13 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialSelec
         <Text style={styles.sectionText}>Mechanic: {mechanicFilterName}</Text>
       ) : null}
       <View style={styles.searchRow}>
-        <Text style={styles.sectionText}>{filteredOrders.length} of {visibleOrders.length} work orders</Text>
+        <Text style={styles.sectionText}>
+          {isChiefMechanicRole && activeChiefQueueMode === "review"
+            ? `${filteredOrders.length} submissions to review`
+            : isChiefMechanicRole
+              ? `${filteredOrders.length} of ${visibleOrders.length} supervised work orders`
+              : `${filteredOrders.length} of ${visibleOrders.length} work orders`}
+        </Text>
         {filtersActive && <TouchableOpacity onPress={clearFilters} accessibilityRole="button"><Text style={{ color: "#1a1f6e", fontWeight: "700" }}>Clear filters</Text></TouchableOpacity>}
       </View>
 
@@ -3622,72 +3653,119 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialSelec
           </View>
         ) : filteredOrders.length === 0 ? (
           <View style={styles.emptyStateCard}>
-            <Text style={styles.emptyStateTitle}>{filtersActive ? "No matching work orders" : "No assigned work orders"}</Text>
+            <Text style={styles.emptyStateTitle}>
+              {filtersActive
+                ? "No matching work orders"
+                : isChiefMechanicRole
+                  ? activeChiefQueueMode === "review"
+                    ? "You're all caught up"
+                    : "No supervised work orders yet"
+                  : "No assigned work orders"}
+            </Text>
             <Text style={styles.emptyStateText}>
-              {filtersActive ? "Try a different search or clear the filters." : accessRole === "mechanic"
-                ? "No execution work orders are assigned to you right now."
-                : chiefQueueMode === "review"
-                  ? "No completed work orders are waiting for your review."
-                  : "No work orders are assigned to you for supervision right now."}
+              {filtersActive
+                ? "Try a different search or clear the filters."
+                : accessRole === "mechanic"
+                  ? "No execution work orders are assigned to you right now."
+                  : activeChiefQueueMode === "review"
+                    ? "New mechanic submissions that need your review will appear here."
+                    : "Work orders assigned to you for supervision will appear here."}
             </Text>
           </View>
         ) : (
-          pageOrders.map((order) => (
+          pageOrders.map((order) => {
+            const progress = checklistProgress(order);
+            const needsChiefReview =
+              isChiefMechanicRole && activeChiefQueueMode === "review";
+
+            return (
                 <Pressable
                   key={order.id}
-                  style={styles.orderCard}
+                  style={[styles.orderCard, isChiefMechanicRole && styles.chiefOrderCard]}
                   onPress={() => void openSearchedOrder(order.id)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${needsChiefReview ? "Review" : "Open"} work order ${order.number} for ${order.plate}`}
                 >
                   <View style={styles.orderCardHeader}>
                     <Text style={styles.orderNumber}>{order.number}</Text>
-                    {renderStatusBadge(order.status)}
+                    {needsChiefReview ? (
+                      <View style={styles.chiefReviewBadge}>
+                        <Text style={styles.chiefReviewBadgeText}>Needs review</Text>
+                      </View>
+                    ) : renderStatusBadge(order.status)}
                   </View>
-                  <View style={styles.cardBody}>
-                    <Text style={styles.cardValue} numberOfLines={1}>
-                      <Text style={styles.cardBoldLabel}>{order.plate}</Text>
-                    </Text>
-                    <View style={styles.cardRow}>
-                      <Text style={styles.cardLabel}>Maintenance Type</Text>
-                    </View>
-                    <Text style={styles.cardValue}>
-                      {order.maintenanceType}
-                    </Text>
-                    <View style={styles.cardRow}>
-                      <Text style={styles.cardLabel}>Priority</Text>
-                    </View>
-                    {renderPriorityBadge(order.priority)}
-                    <View style={styles.cardRow}>
-                      <Text style={styles.cardLabel}>Mechanic</Text>
-                    </View>
-                    <Text style={styles.cardValue}>{order.mechanic}</Text>
-                    {isChiefMechanicRole && chiefQueueMode === "monitoring" ? (() => {
-                      const progress = checklistProgress(order);
-                      return (
-                        <View style={styles.progressSummary}>
-                          <View style={styles.cardRow}>
-                            <Text style={styles.cardLabel}>Mechanic Checklist Progress</Text>
-                            <Text style={styles.progressPercent}>{progress.percent}%</Text>
-                          </View>
+                  {isChiefMechanicRole ? (
+                    <View style={styles.chiefCardBody}>
+                      <View style={styles.chiefVehicleRow}>
+                        <Text style={styles.chiefPlate} numberOfLines={1}>{order.plate}</Text>
+                        {renderPriorityBadge(order.priority)}
+                      </View>
+                      <Text style={styles.chiefMetadata} numberOfLines={2}>
+                        {order.maintenanceType} · {order.mechanic}
+                      </Text>
+                      <View style={styles.chiefChecklist}>
+                        <View style={styles.chiefChecklistHeader}>
+                          <Text style={styles.chiefChecklistLabel}>Mechanic checklist</Text>
+                          {progress.total > 0 ? (
+                            <Text style={styles.progressPercent}>
+                              {progress.percent}% · {progress.completed}/{progress.total}
+                            </Text>
+                          ) : null}
+                        </View>
+                        {progress.total > 0 ? (
                           <View style={styles.progressTrack}>
                             <View style={[styles.progressFill, { width: `${progress.percent}%` }]} />
                           </View>
-                          <Text style={styles.progressCaption}>
-                            {progress.completed} of {progress.total} items complete
+                        ) : (
+                          <Text style={styles.chiefChecklistUnavailable}>
+                            No checklist items configured
                           </Text>
+                        )}
+                      </View>
+                      <View style={styles.chiefOrderFooter}>
+                        <Text style={styles.chiefDateCreated}>Created {order.dateCreated}</Text>
+                        <View style={styles.chiefCardAction}>
+                          <Text style={styles.chiefCardActionText}>
+                            {needsChiefReview ? "Review submission" : "View progress"}
+                          </Text>
+                          <Text style={styles.cardArrow}>›</Text>
                         </View>
-                      );
-                    })() : null}
-                    <View style={styles.cardRow}>
-                      <Text style={styles.cardLabel}>Date Created</Text>
+                      </View>
                     </View>
-                    <Text style={styles.cardValue}>{order.dateCreated}</Text>
-                  </View>
-                  <View style={styles.orderCardFooter}>
-                    <Text style={styles.cardHint}>{isChiefMechanicRole && chiefQueueMode === "monitoring" ? "View mechanic progress" : "Open details"}</Text>
-                    <Text style={styles.cardArrow}>›</Text>
-                  </View>
+                  ) : (
+                    <>
+                      <View style={styles.cardBody}>
+                        <Text style={styles.cardValue} numberOfLines={1}>
+                          <Text style={styles.cardBoldLabel}>{order.plate}</Text>
+                        </Text>
+                        <View style={styles.cardRow}>
+                          <Text style={styles.cardLabel}>Maintenance Type</Text>
+                        </View>
+                        <Text style={styles.cardValue}>
+                          {order.maintenanceType}
+                        </Text>
+                        <View style={styles.cardRow}>
+                          <Text style={styles.cardLabel}>Priority</Text>
+                        </View>
+                        {renderPriorityBadge(order.priority)}
+                        <View style={styles.cardRow}>
+                          <Text style={styles.cardLabel}>Mechanic</Text>
+                        </View>
+                        <Text style={styles.cardValue}>{order.mechanic}</Text>
+                        <View style={styles.cardRow}>
+                          <Text style={styles.cardLabel}>Date Created</Text>
+                        </View>
+                        <Text style={styles.cardValue}>{order.dateCreated}</Text>
+                      </View>
+                      <View style={styles.orderCardFooter}>
+                        <Text style={styles.cardHint}>Open details</Text>
+                        <Text style={styles.cardArrow}>›</Text>
+                      </View>
+                    </>
+                  )}
                 </Pressable>
-          ))
+            );
+          })
         )}
         {!isLoading && filteredOrders.length > 0 && totalPages > 1 ? (
           <View style={styles.pagination}>
@@ -3721,13 +3799,33 @@ const styles = StyleSheet.create({
   chiefQueueToggle: { flexDirection: "row", backgroundColor: "#e2e8f0", borderRadius: 12, padding: 4, gap: 4, marginBottom: 12 },
   chiefQueueTab: { flex: 1, minHeight: 44, paddingHorizontal: 8, borderRadius: 9, alignItems: "center", justifyContent: "center" },
   chiefQueueTabActive: { backgroundColor: "#ffffff", shadowColor: "#000", shadowOpacity: 0.06, shadowRadius: 4, shadowOffset: { width: 0, height: 1 } },
-  chiefQueueTabText: { color: "#475569", fontSize: 12, fontWeight: "700", textAlign: "center" },
+  chiefQueueTabText: { color: "#475569", fontSize: 11, fontWeight: "700", textAlign: "center" },
   chiefQueueTabTextActive: { color: "#1a1f6e" },
-  progressSummary: { marginTop: 8, padding: 10, borderRadius: 10, backgroundColor: "#f8fafc", borderWidth: 1, borderColor: "#e2e8f0" },
+  chiefOrderCard: { padding: 12, gap: 8 },
+  chiefCardBody: { gap: 8 },
+  chiefVehicleRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 },
+  chiefPlate: { flex: 1, minWidth: 0, color: "#0d0d0d", fontSize: 16, fontWeight: "800" },
+  chiefMetadata: { color: "#475569", fontSize: 13, fontWeight: "600" },
+  chiefChecklist: { gap: 6 },
+  chiefChecklistHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 },
+  chiefChecklistLabel: { color: "#64748b", fontSize: 11, fontWeight: "700" },
+  chiefChecklistUnavailable: { color: "#64748b", fontSize: 11 },
+  chiefOrderFooter: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+    borderTopWidth: 1,
+    borderTopColor: "#e2e8f0",
+    paddingTop: 8,
+    marginTop: 2,
+  },
+  chiefDateCreated: { flex: 1, color: "#64748b", fontSize: 11 },
+  chiefCardAction: { flexDirection: "row", alignItems: "center", gap: 2 },
+  chiefCardActionText: { color: "#1a1f6e", fontSize: 12, fontWeight: "700" },
   progressPercent: { color: "#1a1f6e", fontSize: 12, fontWeight: "800" },
   progressTrack: { height: 7, marginTop: 7, borderRadius: 99, overflow: "hidden", backgroundColor: "#e2e8f0" },
   progressFill: { height: "100%", borderRadius: 99, backgroundColor: "#1a1f6e" },
-  progressCaption: { color: "#64748b", fontSize: 11, marginTop: 5 },
   filterPanel: { padding: 12, backgroundColor: "#ffffff", borderRadius: 12, marginBottom: 12 },
   filterMenuSection: { marginBottom: 8 },
   filterMenuHeader: { flexDirection: "row", alignItems: "center", gap: 12 },
@@ -3787,11 +3885,19 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
   },
+  searchHistoryExpandButton: {
+    flex: 1,
+    minHeight: 44,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
   searchHistoryHeading: {
     color: "#334155",
     fontSize: 13,
     fontWeight: "700",
   },
+  searchHistoryExpandText: { color: "#1a1f6e", fontSize: 12, fontWeight: "700" },
   searchHistoryClear: {
     minHeight: 44,
     justifyContent: "center",
@@ -3909,6 +4015,8 @@ const styles = StyleSheet.create({
   statusOverdue: workOrderStatusColors.overdue,
   statusCompleted: workOrderStatusColors.completed,
   statusBadgeText: { fontSize: 11, fontWeight: "700" },
+  chiefReviewBadge: { backgroundColor: "#fef3c7", borderColor: "#fcd34d", borderWidth: 1, borderRadius: 999, paddingHorizontal: 10, paddingVertical: 5 },
+  chiefReviewBadgeText: { color: "#92400e", fontSize: 11, fontWeight: "700" },
   priorityBadge: { alignSelf: "flex-start", borderRadius: 999, borderWidth: 1, paddingHorizontal: 10, paddingVertical: 4 },
   priorityHigh: { backgroundColor: "#fee2e2", borderColor: "#fca5a5" },
   priorityMedium: { backgroundColor: "#fef3c7", borderColor: "#fcd34d" },
