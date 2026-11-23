@@ -96,7 +96,7 @@ const syncService = new SyncService({
 
 function DashboardTabIcon({ active }: { active: boolean }) {
   return (
-    <Svg width={30} height={30} viewBox="0 0 64 64" fill="none">
+    <Svg width={26} height={26} viewBox="0 0 64 64" fill="none">
       <Path
         d="M18 12h10v10H18zm18 0h10v10H36zm-18 18h10v10H18zm18 0h10v10H36z"
         stroke={active ? "#ffffff" : "#D4A93F"}
@@ -117,8 +117,8 @@ function WorkOrderTabIcon({ active }: { active: boolean }) {
     <Image
       source={source}
       style={{
-        width: 36,
-        height: 36,
+        width: 30,
+        height: 30,
         resizeMode: "contain",
         opacity: active ? 1 : 0.95,
         backgroundColor: "transparent",
@@ -130,7 +130,7 @@ function WorkOrderTabIcon({ active }: { active: boolean }) {
 function NotificationTabIcon({ active, count = 0 }: { active: boolean; count?: number }) {
   return (
     <View>
-    <Svg width={26} height={26} viewBox="0 0 24 24" fill="none">
+    <Svg width={22} height={22} viewBox="0 0 24 24" fill="none">
       <Path
         d="M12 4.5a4.5 4.5 0 0 1 4.5 4.5v2.1c0 .8.3 1.5.8 2.2l1.2 1.5c.6.7.1 1.7-.8 1.7H6.3c-.9 0-1.4-1-.8-1.7l1.2-1.5c.5-.7.8-1.4.8-2.2V9A4.5 4.5 0 0 1 12 4.5Z"
         stroke={active ? "#ffffff" : "#D4A93F"}
@@ -144,7 +144,7 @@ function NotificationTabIcon({ active, count = 0 }: { active: boolean; count?: n
         strokeLinecap="round"
       />
     </Svg>
-    {count > 0 ? <Text accessibilityLabel={`${count} unread notifications`} style={{ position: "absolute", top: -9, right: -15, backgroundColor: "#a32121", color: "white", borderRadius: 10, paddingHorizontal: 5, fontSize: 11 }}>{count > 99 ? "99+" : count}</Text> : null}
+    {count > 0 ? <Text accessibilityLabel={`${count} unread notifications`} style={{ position: "absolute", top: -8, right: -13, backgroundColor: "#a32121", color: "white", borderRadius: 10, paddingHorizontal: 4, fontSize: 10 }}>{count > 99 ? "99+" : count}</Text> : null}
     </View>
   );
 }
@@ -156,8 +156,8 @@ function ProfileTabIcon({ active }: { active: boolean }) {
     <Image
       source={source}
       style={{
-        width: 36,
-        height: 36,
+        width: 30,
+        height: 30,
         resizeMode: "contain",
         opacity: active ? 1 : 0.95,
         backgroundColor: "transparent",
@@ -1139,9 +1139,9 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    paddingHorizontal: 20,
-    paddingTop: 14,
-    paddingBottom: 12,
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: 8,
     backgroundColor: "#ffffff",
     borderBottomWidth: 1,
     borderBottomColor: "#e2e8f0",
@@ -1149,14 +1149,14 @@ const styles = StyleSheet.create({
   headerTitleBlock: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
+    gap: 4,
     flex: 1,
   },
-  logo: { width: 56, height: 56 },
+  logo: { width: 45, height: 45 },
   headerTextBlock: { flex: 1 },
-  title: { fontSize: 24, fontWeight: "800", color: "#1a1f6e" },
-  userName: { fontSize: 13, fontWeight: "700", color: "#64748b", marginTop: 2 },
-  userRole: { fontSize: 12, color: "#64748b", marginTop: 1 },
+  title: { fontSize: 16, fontWeight: "800", color: "#1a1f6e" },
+  userName: { fontSize: 12, fontWeight: "700", color: "#64748b", marginTop: 2 },
+  userRole: { fontSize: 11, color: "#64748b", marginTop: 1 },
   searchButton: {
     width: 36,
     height: 36,
@@ -1611,8 +1611,8 @@ const styles = StyleSheet.create({
     borderTopColor: "#e2e8f0",
     borderBottomWidth: 1,
     borderBottomColor: "#e2e8f0",
-    paddingHorizontal: 8,
-    paddingVertical: 8,
+    paddingHorizontal: 6,
+    paddingVertical: 4,
     shadowColor: "#0f172a",
     shadowOpacity: 0.06,
     shadowRadius: 4,
@@ -1634,10 +1634,10 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 10,
-    borderRadius: 10,
-    marginHorizontal: 4,
-    minHeight: 52,
+    paddingVertical: 6,
+    borderRadius: 9,
+    marginHorizontal: 3,
+    minHeight: 48,
   },
   tabButtonWide: {
     flex: 1.1,
@@ -1653,8 +1653,8 @@ const styles = StyleSheet.create({
   tabButtonText: { fontSize: 14, fontWeight: "700", color: "#64748b" },
   tabButtonTextActive: { color: "#ffffff" },
   tabIcon: {
-    fontSize: 22,
-    lineHeight: 22,
+    fontSize: 19,
+    lineHeight: 19,
     color: "#475569",
   },
   tabIconActive: {

@@ -32,6 +32,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Keyboard,
   KeyboardAvoidingView,
   Image,
   Linking,
@@ -569,6 +570,14 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialSelec
   const [activeStep, setActiveStep] = useState<StepKey>("details");
   const [checklistRequiredError, setChecklistRequiredError] = useState<string | null>(null);
   const detailScrollRef = useRef<ScrollView | null>(null);
+  const detailViewportHeightRef = useRef(0);
+  const executionDetailCardTopRef = useRef(0);
+  const focusedExecutionCardLayoutRef = useRef<{ y: number; height: number } | null>(null);
+  const executionCardLayoutsRef = useRef(new Map<string, { y: number; height: number }>());
+  const maintenanceRemarksLayoutRef = useRef<{ y: number; height: number } | null>(null);
+  const keyboardVisibleRef = useRef(false);
+  const [detailViewportHeight, setDetailViewportHeight] = useState(0);
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
   const [extensionPanelOpen, setExtensionPanelOpen] = useState(false);
   const [extensionHistory, setExtensionHistory] =
     useState<MaintenanceScheduleExtensionHistory | null>(null);
@@ -584,6 +593,49 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialSelec
   const [aiRecommendations, setAiRecommendations] =
     useState<WorkOrderRecommendationsResponse | null>(null);
   const extensionHistoryRequestId = useRef(0);
+
+  const centerFocusedExecutionCard = useCallback(() => {
+    const scroll = detailScrollRef.current;
+    const layout = focusedExecutionCardLayoutRef.current;
+    const viewportHeight = detailViewportHeightRef.current;
+    if (!scroll || !layout || viewportHeight <= 0) return;
+
+    scroll.scrollTo({
+      y: Math.max(
+        0,
+        executionDetailCardTopRef.current + layout.y + (layout.height - viewportHeight) / 2,
+      ),
+      animated: true,
+    });
+  }, []);
+
+  const focusExecutionCard = useCallback(
+    (layout: { y: number; height: number } | null) => {
+      focusedExecutionCardLayoutRef.current = layout;
+      if (layout && keyboardVisibleRef.current) {
+        requestAnimationFrame(() => centerFocusedExecutionCard());
+      }
+    },
+    [centerFocusedExecutionCard],
+  );
+
+  useEffect(() => {
+    const keyboardDidShow = Keyboard.addListener("keyboardDidShow", () => {
+      keyboardVisibleRef.current = true;
+      setKeyboardVisible(true);
+      requestAnimationFrame(() => centerFocusedExecutionCard());
+    });
+    const keyboardDidHide = Keyboard.addListener("keyboardDidHide", () => {
+      keyboardVisibleRef.current = false;
+      focusedExecutionCardLayoutRef.current = null;
+      setKeyboardVisible(false);
+    });
+
+    return () => {
+      keyboardDidShow.remove();
+      keyboardDidHide.remove();
+    };
+  }, [centerFocusedExecutionCard]);
 
   const resetExtensionPanel = () => {
     extensionHistoryRequestId.current += 1;
@@ -2530,7 +2582,21 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialSelec
         <ScrollView
           ref={detailScrollRef}
           style={styles.detailScroll}
-          contentContainerStyle={styles.detailContent}
+          contentContainerStyle={[
+            styles.detailContent,
+            activeStep === "execution" &&
+              keyboardVisible && {
+                paddingBottom: Math.max(16, detailViewportHeight / 2),
+              },
+          ]}
+          onLayout={(event) => {
+            const height = event.nativeEvent.layout.height;
+            detailViewportHeightRef.current = height;
+            setDetailViewportHeight(height);
+            if (keyboardVisibleRef.current && focusedExecutionCardLayoutRef.current) {
+              requestAnimationFrame(() => centerFocusedExecutionCard());
+            }
+          }}
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
           refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={refreshWorkOrders} colors={["#1a1f6e", "#d4a93f"]} tintColor="#1a1f6e" progressBackgroundColor="#ffffff" />}
@@ -2862,7 +2928,15 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialSelec
 
           {/* Step 2: Execution */}
           {activeStep === "execution" && (
-            <View style={styles.detailCard}>
+            <View
+              style={styles.detailCard}
+              onLayout={(event) => {
+                executionDetailCardTopRef.current = event.nativeEvent.layout.y;
+                if (keyboardVisibleRef.current && focusedExecutionCardLayoutRef.current) {
+                  requestAnimationFrame(() => centerFocusedExecutionCard());
+                }
+              }}
+            >
               <Text style={styles.sectionTitle}>Execution Checklist</Text>
               <Text style={styles.sectionText}>
                 {isChiefMechanicRole
@@ -2885,7 +2959,14 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialSelec
                           : "PENDING";
 
                   return (
-                    <View key={item.id} style={styles.checklistItemCard}>
+                    <View
+                      key={item.id}
+                      style={styles.checklistItemCard}
+                      onLayout={(event) => {
+                        const { y, height } = event.nativeEvent.layout;
+                        executionCardLayoutsRef.current.set(item.id, { y, height });
+                      }}
+                    >
                       <Text style={styles.checklistItemLabel}>
                         {item.label}
                       </Text>
@@ -2933,6 +3014,9 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialSelec
                         placeholder="Add note"
                         placeholderTextColor="#94a3b8"
                         value={item.note}
+                        onFocus={() =>
+                          focusExecutionCard(executionCardLayoutsRef.current.get(item.id) ?? null)
+                        }
                         onChangeText={(text) =>
                           updateExecutionNote(selectedOrder.id, item.id, text)
                         }
@@ -2942,7 +3026,13 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialSelec
                 })
               )}
 
-              <View style={styles.remarksSection}>
+              <View
+                style={styles.remarksSection}
+                onLayout={(event) => {
+                  const { y, height } = event.nativeEvent.layout;
+                  maintenanceRemarksLayoutRef.current = { y, height };
+                }}
+              >
                 <Text style={styles.remarksLabel}>Maintenance Work Remarks</Text>
                 <Text style={styles.sectionText}>Describe the maintenance work performed and any additional information about this activity.</Text>
                 <TextInput
@@ -2952,6 +3042,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialSelec
                   placeholderTextColor="#94a3b8"
                   multiline
                   value={selectedOrder.maintenanceRemarks}
+                  onFocus={() => focusExecutionCard(maintenanceRemarksLayoutRef.current)}
                   onChangeText={(text) => updateMaintenanceRemarks(selectedOrder.id, text)}
                 />
               </View>
@@ -3881,39 +3972,39 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 12,
-    paddingVertical: 8,
+    marginBottom: 6,
+    paddingVertical: 4,
   },
   backButton: { minHeight: 44, justifyContent: "center" },
-  backButtonText: { color: "#1a1f6e", fontWeight: "700", fontSize: 14 },
+  backButtonText: { color: "#1a1f6e", fontWeight: "700", fontSize: 13 },
   exportButton: {
     minHeight: 44,
-    paddingHorizontal: 12,
+    paddingHorizontal: 8,
     justifyContent: "center",
     alignItems: "center",
     backgroundColor: "#1a1f6e",
-    borderRadius: 10,
+    borderRadius: 8,
   },
   exportButtonContent: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
+    gap: 4,
   },
-  exportButtonText: { color: "#ffffff", fontWeight: "700", fontSize: 12 },
+  exportButtonText: { color: "#ffffff", fontWeight: "700", fontSize: 11 },
 
   templateBanner: {
     backgroundColor: "#f5f3ff",
     borderRadius: 10,
     borderWidth: 1,
     borderColor: "#ddd6fe",
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    marginBottom: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    marginBottom: 8,
   },
   templateBannerText: {
     color: "#4c1d95",
     fontWeight: "700",
-    fontSize: 13,
+    fontSize: 12,
   },
 
   stepBar: {
@@ -3922,17 +4013,17 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     borderWidth: 1,
     borderColor: "#e2e8f0",
-    padding: 4,
-    gap: 6,
-    marginBottom: 12,
+    padding: 2,
+    gap: 4,
+    marginBottom: 8,
   },
   stepButton: {
     flex: 1,
     minHeight: 44,
     justifyContent: "center",
     alignItems: "center",
-    borderRadius: 10,
-    paddingHorizontal: 6,
+    borderRadius: 8,
+    paddingHorizontal: 4,
   },
   stepButtonActive: { backgroundColor: "#1a1f6e" },
   stepButtonText: {
@@ -4395,9 +4486,9 @@ const styles = StyleSheet.create({
   },
   pdfExportTitle: {
     color: "#1a1f6e",
-    fontSize: 20,
+    fontSize: 24,
     fontWeight: "800",
-    lineHeight: 26,
+    lineHeight: 31,
     textAlign: "center",
   },
   pdfExportMessage: {
