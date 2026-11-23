@@ -3,7 +3,6 @@ import {
   ActivityIndicator,
   Image,
   KeyboardAvoidingView,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -12,6 +11,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { MaterialCommunityIcons } from "@expo/vector-icons";
 
 import { AuthService } from "../services/AuthService";
 
@@ -26,8 +26,33 @@ const CODE_LENGTH = 6;
 const RESEND_SECONDS = 60;
 const welincLogo = require("../assets/welinc_logo.jpg");
 const movingTrucks = require("../assets/trucks_moving.gif");
-const PASSWORD_REQUIREMENTS =
-  /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$/;
+const PASSWORD_REQUIREMENTS = [
+  {
+    id: "length",
+    label: "At least 8 characters long.",
+    isMet: (password: string) => password.length >= 8,
+  },
+  {
+    id: "uppercase",
+    label: "Contains uppercase letters.",
+    isMet: (password: string) => /[A-Z]/.test(password),
+  },
+  {
+    id: "lowercase",
+    label: "Contains lowercase letters.",
+    isMet: (password: string) => /[a-z]/.test(password),
+  },
+  {
+    id: "number",
+    label: "Contains numbers.",
+    isMet: (password: string) => /\d/.test(password),
+  },
+  {
+    id: "punctuation",
+    label: "Contains punctuation.",
+    isMet: (password: string) => /[\p{P}\p{S}]/u.test(password),
+  },
+] as const;
 
 function isInvalidResetCode(error: unknown): boolean {
   return error instanceof Error && /invalid or expired otp/i.test(error.message);
@@ -52,6 +77,12 @@ export function ForgotPasswordScreen({ authService, onBack }: ForgotPasswordScre
   const [message, setMessage] = useState<string | null>(null);
   const codeInputRef = useRef<TextInput>(null);
   const cleanEmail = email.trim().toLowerCase();
+  const passwordRequirementStatuses = PASSWORD_REQUIREMENTS.map(({ id, label, isMet }) => ({
+    id,
+    label,
+    met: isMet(newPassword),
+  }));
+  const hasIncompletePasswordRequirements = passwordRequirementStatuses.some(({ met }) => !met);
 
   useEffect(() => {
     if (resendWait <= 0) return;
@@ -128,15 +159,10 @@ export function ForgotPasswordScreen({ authService, onBack }: ForgotPasswordScre
     if (loading) return;
     setError(null);
     if (newPassword !== confirmPassword) {
-      setError("The two passwords are different.");
+      setError("Password doesn't match confirmation.");
       return;
     }
-    if (!PASSWORD_REQUIREMENTS.test(newPassword)) {
-      setError(
-        "Use at least 8 characters, with an uppercase letter, a lowercase letter, a number, and a special character.",
-      );
-      return;
-    }
+    if (hasIncompletePasswordRequirements) return;
 
     setLoading(true);
     try {
@@ -182,10 +208,11 @@ export function ForgotPasswordScreen({ authService, onBack }: ForgotPasswordScre
         resizeMode="cover"
       />
       <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        behavior="padding"
         style={styles.keyboardAvoidingView}
       >
         <ScrollView
+          style={styles.cardScrollView}
           contentContainerStyle={styles.cardArea}
           keyboardShouldPersistTaps="handled"
         >
@@ -351,7 +378,7 @@ export function ForgotPasswordScreen({ authService, onBack }: ForgotPasswordScre
                     autoComplete="new-password"
                     editable={!loading}
                     onChangeText={setNewPassword}
-                    placeholder="At least 8 characters"
+                    placeholder="New Password"
                     placeholderTextColor="#64708d"
                     secureTextEntry={!showNewPassword}
                     style={[styles.input, styles.passwordInput]}
@@ -365,16 +392,51 @@ export function ForgotPasswordScreen({ authService, onBack }: ForgotPasswordScre
                     onPress={() => setShowNewPassword((shown) => !shown)}
                     style={styles.eyeButton}
                   >
-                    <View style={styles.eyeOutline}>
-                      <View style={styles.eyePupil} />
-                      {!showNewPassword ? <View style={styles.eyeSlash} /> : null}
-                    </View>
+                    <MaterialCommunityIcons
+                      color="#000000"
+                      name={showNewPassword ? "eye-outline" : "eye-off-outline"}
+                      size={22}
+                    />
                   </TouchableOpacity>
                 </View>
-                <Text style={styles.passwordHint}>
-                  At least 8 characters, with an uppercase letter, a lowercase
-                  letter, a number and a special character.
-                </Text>
+                {newPassword.length > 0 ? (
+                  <>
+                    <View style={styles.passwordRequirements}>
+                      {passwordRequirementStatuses.map(({ id, label, met }) => (
+                        <View
+                          key={id}
+                          accessible
+                          accessibilityLabel={`${label} ${met ? "Met" : "Not met"}`}
+                          accessibilityRole="text"
+                          style={styles.passwordRequirementRow}
+                        >
+                          <MaterialCommunityIcons
+                            accessible={false}
+                            color={met ? "#79b86b" : "#7f89a6"}
+                            name={met ? "check-circle" : "checkbox-blank-circle-outline"}
+                            size={18}
+                          />
+                          <Text
+                            style={[
+                              styles.passwordRequirementText,
+                              met && styles.passwordRequirementMet,
+                            ]}
+                          >
+                            {label}
+                          </Text>
+                        </View>
+                      ))}
+                    </View>
+                    {hasIncompletePasswordRequirements ? (
+                      <Text
+                        accessibilityRole="alert"
+                        style={styles.passwordValidationError}
+                      >
+                        Password doesn&apos;t meet all requirements.
+                      </Text>
+                    ) : null}
+                  </>
+                ) : null}
                 <Text style={styles.label}>Confirm password</Text>
                 <View style={styles.passwordInputWrap}>
                   <TextInput
@@ -383,7 +445,7 @@ export function ForgotPasswordScreen({ authService, onBack }: ForgotPasswordScre
                     editable={!loading}
                     onChangeText={setConfirmPassword}
                     onSubmitEditing={() => void resetPassword()}
-                    placeholder="Type it again"
+                    placeholder="Confirm Password"
                     placeholderTextColor="#64708d"
                     returnKeyType="done"
                     secureTextEntry={!showConfirmPassword}
@@ -406,10 +468,11 @@ export function ForgotPasswordScreen({ authService, onBack }: ForgotPasswordScre
                     onPress={() => setShowConfirmPassword((shown) => !shown)}
                     style={styles.eyeButton}
                   >
-                    <View style={styles.eyeOutline}>
-                      <View style={styles.eyePupil} />
-                      {!showConfirmPassword ? <View style={styles.eyeSlash} /> : null}
-                    </View>
+                    <MaterialCommunityIcons
+                      color="#000000"
+                      name={showConfirmPassword ? "eye-outline" : "eye-off-outline"}
+                      size={22}
+                    />
                   </TouchableOpacity>
                 </View>
                 <Pressable
@@ -424,7 +487,7 @@ export function ForgotPasswordScreen({ authService, onBack }: ForgotPasswordScre
                   {loading ? (
                     <ActivityIndicator color="#101958" />
                   ) : (
-                    <Text style={styles.buttonText}>Set password</Text>
+                    <Text style={styles.buttonText}>Change Password</Text>
                   )}
                 </Pressable>
               </>
@@ -458,8 +521,10 @@ export function ForgotPasswordScreen({ authService, onBack }: ForgotPasswordScre
 const styles = StyleSheet.create({
   screen: { flex: 1, position: "relative", backgroundColor: "#ffffff" },
   keyboardAvoidingView: { flex: 1 },
+  cardScrollView: { flex: 1 },
   cardArea: {
     flexGrow: 1,
+    flexShrink: 0,
     justifyContent: "center",
     paddingHorizontal: 24,
     paddingVertical: 24,
@@ -546,10 +611,17 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  eyeOutline: { width: 20, height: 13, borderWidth: 1.5, borderColor: "#cdd5ec", borderRadius: 12, alignItems: "center", justifyContent: "center" },
-  eyePupil: { width: 5, height: 5, borderRadius: 5, backgroundColor: "#cdd5ec" },
-  eyeSlash: { position: "absolute", width: 24, height: 1.5, backgroundColor: "#cdd5ec", transform: [{ rotate: "-45deg" }] },
-  passwordHint: { color: "#aeb5d2", fontSize: 12, lineHeight: 18, marginBottom: 14 },
+  passwordRequirements: { marginBottom: 8 },
+  passwordRequirementRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    minHeight: 22,
+  },
+  passwordRequirementText: { flex: 1, color: "#aeb5d2", fontSize: 12, lineHeight: 18 },
+  passwordRequirementMet: { color: "#ffffff" },
+  passwordValidationError: { color: "#fca5a5", fontSize: 12, lineHeight: 16, marginTop: 4 },
+  passwordSecurityNote: { color: "#aeb5d2", fontSize: 12, lineHeight: 18, marginBottom: 14 },
   button: {
     width: "100%",
     minHeight: 52,

@@ -3,6 +3,24 @@ import { ForgotPasswordScreen } from "../screens/ForgotPasswordScreen";
 import { LoginScreen } from "../screens/LoginScreen";
 import { AuthService } from "../services/AuthService";
 
+test("toggles password visibility from the login field", async () => {
+  const view = await render(
+    <LoginScreen
+      authService={new AuthService("http://localhost:3000")}
+      onAuthenticated={jest.fn()}
+      onBack={jest.fn()}
+      onForgotPassword={jest.fn()}
+    />,
+  );
+  const passwordInput = view.getByPlaceholderText("Enter password");
+
+  expect(passwordInput.props.secureTextEntry).toBe(true);
+  await fireEvent.press(view.getByRole("button", { name: "Show password" }));
+  expect(passwordInput.props.secureTextEntry).toBe(false);
+  await fireEvent.press(view.getByRole("button", { name: "Hide password" }));
+  expect(passwordInput.props.secureTextEntry).toBe(true);
+});
+
 test("requests a reset code, resets the password, and returns to sign-in", async () => {
   const authService = new AuthService("http://localhost:3000");
   const requestPasswordReset = jest
