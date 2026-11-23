@@ -239,6 +239,7 @@ export default function App() {
   const inbox = useNotifications(user?.id);
   const globalSearchHistory = useSearchHistory(user?.id, "global");
   const [notificationOrderId, setNotificationOrderId] = useState<string | null>(null);
+  const [selectedWorkOrderId, setSelectedWorkOrderId] = useState<string | null>(null);
   const [profileForm, setProfileForm] = useState({
     firstName: "",
     lastName: "",
@@ -488,6 +489,7 @@ export default function App() {
     screen: "dashboard" | "work-orders" | "notifications" | "profile",
   ) => {
     setNotificationOrderId(null);
+    setSelectedWorkOrderId(null);
     setDashboardWorkOrderFilter(null);
     setActiveScreen(screen);
     setNavigationReloadKey((key) => key + 1);
@@ -514,6 +516,7 @@ export default function App() {
     void inbox.markRead(notification);
     if (notification.scheduleId) {
       setNotificationOrderId(notification.scheduleId);
+      setSelectedWorkOrderId(notification.scheduleId);
       setDashboardWorkOrderFilter(null);
       setActiveScreen("work-orders");
       setNavigationReloadKey((key) => key + 1);
@@ -522,6 +525,7 @@ export default function App() {
 
   const openDashboardWorkOrders = (filter: DashboardWorkOrderFilter) => {
     setNotificationOrderId(null);
+    setSelectedWorkOrderId(null);
     setDashboardWorkOrderFilter(filter);
     setActiveScreen("work-orders");
     setNavigationReloadKey((key) => key + 1);
@@ -549,6 +553,7 @@ export default function App() {
 
     if (destination.screen === "work-orders") {
       setNotificationOrderId(destination.workOrderId);
+      setSelectedWorkOrderId(destination.workOrderId);
       setDashboardWorkOrderFilter(null);
       setActiveScreen("work-orders");
       setNavigationReloadKey((key) => key + 1);
@@ -835,7 +840,17 @@ export default function App() {
             onOpenWorkOrders={openDashboardWorkOrders}
           />
         ) : activeScreen === "work-orders" ? (
-          <WorkOrderScreen key={navigationReloadKey} accessRole={accessRole} user={user} initialOrderId={notificationOrderId} initialDashboardFilter={dashboardWorkOrderFilter} syncService={syncService} onLoadingChange={setIsPageRefreshing} />
+          <WorkOrderScreen
+            key={navigationReloadKey}
+            accessRole={accessRole}
+            user={user}
+            initialOrderId={notificationOrderId}
+            initialSelectedOrderId={selectedWorkOrderId}
+            initialDashboardFilter={dashboardWorkOrderFilter}
+            onSelectedOrderChange={setSelectedWorkOrderId}
+            syncService={syncService}
+            onLoadingChange={setIsPageRefreshing}
+          />
         ) : activeScreen === "notifications" ? (
           <NotificationsScreen key={navigationReloadKey} notifications={inbox.notifications} loading={inbox.loading} error={inbox.error} onRefresh={() => inbox.refresh()} onLoadingChange={setIsPageRefreshing} accessRole={accessRole} onOpen={openNotification} />
         ) : (
