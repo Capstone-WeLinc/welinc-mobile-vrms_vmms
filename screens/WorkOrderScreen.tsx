@@ -12,7 +12,11 @@ import {
 } from "./workOrderSubmission";
 import { isWorkOrderStartDateReached } from "./workOrderStartDate";
 import { getPersistedWorkOrderNumber } from "./workOrderId";
-import { isAwaitingChiefReview, submittedReviewState } from "./workOrderReview";
+import {
+  canOpenWorkOrder,
+  isAwaitingChiefReview,
+  submittedReviewState,
+} from "./workOrderReview";
 import { sortWorkOrdersForQueue } from "./workOrderPriority";
 import {
   dashboardWorkOrderStatuses,
@@ -23,10 +27,13 @@ import { formatWorkOrderDate as formatReadableDate } from "../services/workOrder
 import { MobilePageHeader } from "../components/MobilePageHeader";
 import { MaintenanceStatusLegend } from "../components/MaintenanceStatusLegend";
 import { isLaterDateOnly, isValidDateOnly } from "./scheduleExtensionDate";
+import { buildWorkOrderPdfHtml } from "./workOrderPdf";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Keyboard,
+  KeyboardAvoidingView,
   Image,
   Linking,
   Modal,
@@ -42,6 +49,9 @@ import {
 } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import * as DocumentPicker from "expo-document-picker";
+import * as Print from "expo-print";
+import * as FileSystemLegacy from "expo-file-system/legacy";
+import * as SecureStore from "expo-secure-store";
 import { File, Paths } from "expo-file-system";
 import Svg, { Path } from "react-native-svg";
 
@@ -54,6 +64,7 @@ import type {
   MobileAccessRole,
 } from "../services/AuthService";
 import { API_BASE_URL, AuthService } from "../services/AuthService";
+import { useSearchHistory } from "../services/useSearchHistory";
 import {
   WorkOrderAnalyticsService,
   type WorkOrderRecommendationsResponse,
@@ -76,6 +87,11 @@ type WorkOrderStatus =
   | "Rejected"
   | "For Repair";
 type StepKey = "details" | "execution" | "parts" | "inspection";
+type PdfExportModalState =
+  | { status: "preparing" | "saving" | "cancelled" | "print" }
+  | { status: "success" | "error"; message: string };
+
+const WORK_ORDER_PDF_DIRECTORY_KEY = "vmms.work-order-pdf-directory";
 
 type ExecutionItem = {
   id: string;
@@ -510,23 +526,30 @@ interface WorkOrderScreenProps {
   accessRole: MobileAccessRole;
   user: AuthenticatedUser;
   initialOrderId?: string | null;
+  initialSelectedOrderId?: string | null;
   initialDashboardFilter?: DashboardWorkOrderFilter | null;
+  onSelectedOrderChange?: (orderId: string | null) => void;
   syncService?: SyncService;
   onLoadingChange?: (loading: boolean) => void;
 }
 
-export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashboardFilter, syncService, onLoadingChange }: WorkOrderScreenProps) {
+export function WorkOrderScreen({ accessRole, user, initialOrderId, initialSelectedOrderId, initialDashboardFilter, onSelectedOrderChange, syncService, onLoadingChange }: WorkOrderScreenProps) {
   const saveQueue = useRef<Promise<unknown>>(Promise.resolve());
   const localSaveQueue = useRef<Promise<unknown>>(Promise.resolve());
   const syncWarningShown = useRef(false);
   const progressRevision = useRef(new Map<string, number>());
   const actionInFlight = useRef(false);
   const [savingAction, setSavingAction] = useState(false);
+  const [isExportingPDF, setIsExportingPDF] = useState(false);
+  const [pdfExportModal, setPdfExportModal] =
+    useState<PdfExportModalState | null>(null);
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [pullRefreshing, setPullRefreshing] = useState(false);
   const [reloadVersion, setReloadVersion] = useState(0);
   const [searchQuery, setSearchQuery] = useState("");
+  const searchHistory = useSearchHistory(user.id, "work-orders");
+  const [recentSearchesExpanded, setRecentSearchesExpanded] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
   const [openFilterMenu, setOpenFilterMenu] = useState<"status" | "type" | "priority" | null>(null);
   const [statusFilter, setStatusFilter] = useState<string | null>(
@@ -540,10 +563,22 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
   );
   const [typeFilter, setTypeFilter] = useState<string | null>(null);
   const [priorityFilter, setPriorityFilter] = useState<string | null>(null);
-  const [chiefQueueMode, setChiefQueueMode] = useState<"monitoring" | "review">("monitoring");
+  const [chiefQueueMode, setChiefQueueMode] = useState<"monitoring" | "review" | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
-  const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
+  const [selectedOrderId, setSelectedOrderId] = useState<string | null>(
+    initialSelectedOrderId ?? initialOrderId ?? null,
+  );
   const [activeStep, setActiveStep] = useState<StepKey>("details");
+  const [checklistRequiredError, setChecklistRequiredError] = useState<string | null>(null);
+  const detailScrollRef = useRef<ScrollView | null>(null);
+  const detailViewportHeightRef = useRef(0);
+  const executionDetailCardTopRef = useRef(0);
+  const focusedExecutionCardLayoutRef = useRef<{ y: number; height: number } | null>(null);
+  const executionCardLayoutsRef = useRef(new Map<string, { y: number; height: number }>());
+  const maintenanceRemarksLayoutRef = useRef<{ y: number; height: number } | null>(null);
+  const keyboardVisibleRef = useRef(false);
+  const [detailViewportHeight, setDetailViewportHeight] = useState(0);
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
   const [extensionPanelOpen, setExtensionPanelOpen] = useState(false);
   const [extensionHistory, setExtensionHistory] =
     useState<MaintenanceScheduleExtensionHistory | null>(null);
@@ -560,6 +595,49 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
     useState<WorkOrderRecommendationsResponse | null>(null);
   const extensionHistoryRequestId = useRef(0);
 
+  const centerFocusedExecutionCard = useCallback(() => {
+    const scroll = detailScrollRef.current;
+    const layout = focusedExecutionCardLayoutRef.current;
+    const viewportHeight = detailViewportHeightRef.current;
+    if (!scroll || !layout || viewportHeight <= 0) return;
+
+    scroll.scrollTo({
+      y: Math.max(
+        0,
+        executionDetailCardTopRef.current + layout.y + (layout.height - viewportHeight) / 2,
+      ),
+      animated: true,
+    });
+  }, []);
+
+  const focusExecutionCard = useCallback(
+    (layout: { y: number; height: number } | null) => {
+      focusedExecutionCardLayoutRef.current = layout;
+      if (layout && keyboardVisibleRef.current) {
+        requestAnimationFrame(() => centerFocusedExecutionCard());
+      }
+    },
+    [centerFocusedExecutionCard],
+  );
+
+  useEffect(() => {
+    const keyboardDidShow = Keyboard.addListener("keyboardDidShow", () => {
+      keyboardVisibleRef.current = true;
+      setKeyboardVisible(true);
+      requestAnimationFrame(() => centerFocusedExecutionCard());
+    });
+    const keyboardDidHide = Keyboard.addListener("keyboardDidHide", () => {
+      keyboardVisibleRef.current = false;
+      focusedExecutionCardLayoutRef.current = null;
+      setKeyboardVisible(false);
+    });
+
+    return () => {
+      keyboardDidShow.remove();
+      keyboardDidHide.remove();
+    };
+  }, [centerFocusedExecutionCard]);
+
   const resetExtensionPanel = () => {
     extensionHistoryRequestId.current += 1;
     setExtensionPanelOpen(false);
@@ -575,7 +653,9 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
   const closeOrder = () => {
     resetExtensionPanel();
     setActivePartSuggestionItemId(null);
+    setChecklistRequiredError(null);
     setSelectedOrderId(null);
+    onSelectedOrderChange?.(null);
   };
 
   const refreshWorkOrders = () => {
@@ -787,11 +867,14 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
         if (!mounted) return;
         setWorkOrders(converted);
         if (initialOrderId) {
-          const target = converted.find((order) => order.id === initialOrderId &&
-            (accessRole === "mechanic" ? order.assignedMechanicId === user.id :
-              accessRole === "chiefMechanic" && isAwaitingChiefReview(order, user.id)));
+          const target = converted.find(
+            (order) =>
+              order.id === initialOrderId &&
+              canOpenWorkOrder(order, accessRole, user.id),
+          );
           if (target) {
             setSelectedOrderId(target.id);
+            onSelectedOrderChange?.(target.id);
             setActiveStep("details");
           } else {
             Alert.alert("Work order unavailable", "This work order may have been removed, reassigned, or is not awaiting your review. Refresh your work orders and try again.");
@@ -813,7 +896,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
     return () => {
       mounted = false;
     };
-  }, [initialOrderId, syncService, accessRole, user.id, reloadVersion, onLoadingChange]);
+  }, [initialOrderId, syncService, accessRole, user.id, reloadVersion, onLoadingChange, onSelectedOrderChange]);
 
   useEffect(() => {
     if (accessRole !== "chiefMechanic" || !syncService) return;
@@ -1055,10 +1138,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
       if (error) {
         setActivePartSuggestionItemId(null);
         setActiveStep("execution");
-        Alert.alert(
-          "Assigned checklist required",
-          `${error}\n\nAsk Operations to assign or refresh the checklist before starting maintenance.`,
-        );
+        setChecklistRequiredError(error);
         return;
       }
     }
@@ -1141,10 +1221,15 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
 
   const chiefSupervisedOrders = workOrders.filter((order) => order.chiefMechanicId === user.id);
   const chiefReviewOrders = chiefSupervisedOrders.filter((order) => isAwaitingChiefReview(order, user.id));
+  const activeChiefQueueMode =
+    chiefQueueMode ??
+    (initialDashboardFilter
+      ? initialDashboardFilter.status === "Awaiting Review" ? "review" : "monitoring"
+      : chiefReviewOrders.length > 0 ? "review" : "monitoring");
   const visibleOrders = accessRole === "mechanic"
     ? workOrders.filter((order) => order.assignedMechanicId === user.id)
     : accessRole === "chiefMechanic"
-      ? chiefQueueMode === "review" ? chiefReviewOrders : chiefSupervisedOrders
+      ? activeChiefQueueMode === "review" ? chiefReviewOrders : chiefSupervisedOrders
       : [];
   const statusOptions = [
     ...new Set([
@@ -1187,6 +1272,11 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
     const completed = order.executionItems.filter((item) => item.status === "checked" || item.status === "changed").length;
     return { completed, total, percent: total ? Math.round((completed / total) * 100) : 0 };
   };
+  useEffect(() => {
+    if (!selectedOrderId) return;
+    detailScrollRef.current?.scrollTo({ y: 0, animated: false });
+  }, [activeStep, selectedOrderId]);
+
   useEffect(() => {
     // Reset pagination when filters change so results start on the first page.
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -1561,7 +1651,19 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
     resetExtensionPanel();
     setActivePartSuggestionItemId(null);
     setSelectedOrderId(orderId);
+    onSelectedOrderChange?.(orderId);
     setActiveStep("details");
+  };
+
+  const openSearchedOrder = async (orderId: string) => {
+    const historySaved = await searchHistory.recordSearch(searchQuery);
+    if (!historySaved) {
+      Alert.alert(
+        "Search history unavailable",
+        "The work order will open, but this search could not be saved.",
+      );
+    }
+    openOrder(orderId);
   };
 
   const isMechanicRole = accessRole === "mechanic";
@@ -1681,9 +1783,128 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
         : []),
   ];
 
-  const exportPDF = () => {
-    if (selectedOrder) {
-      Alert.alert("Export PDF", `Exporting ${selectedOrder.number} to PDF...`);
+  const exportPDF = async () => {
+    if (!selectedOrder || isExportingPDF) return;
+    setIsExportingPDF(true);
+    setPdfExportModal({ status: "preparing" });
+    try {
+      const html = buildWorkOrderPdfHtml({
+        number: selectedOrder.number,
+        plate: selectedOrder.plate,
+        maintenanceType: selectedOrder.maintenanceType,
+        maintenanceClass: selectedOrder.maintenanceClass,
+        status: selectedOrder.status,
+        mechanic: selectedOrder.mechanic,
+        template: selectedOrder.template,
+        dateCreated: selectedOrder.dateCreated,
+        startDate: selectedOrder.startDate
+          ? formatReadableDate(selectedOrder.startDate)
+          : null,
+        serviceOdometerReading: selectedOrder.serviceOdometerReading,
+        summary: selectedOrder.summary,
+        scheduleDetails: selectedOrder.scheduleDetails,
+        maintenanceRemarks: selectedOrder.maintenanceRemarks,
+        rejectionRemarks: isMechanicRole ? selectedOrder.rejectionRemarks : "",
+        executionItems: selectedOrder.executionItems,
+        partDetails: selectedOrder.partDetails,
+      });
+
+      if (Platform.OS === "web") {
+        await Print.printAsync({ html });
+        setPdfExportModal({ status: "print" });
+        return;
+      }
+
+      const { base64, uri: generatedPdfUri } = await Print.printToFileAsync({
+        html,
+        base64: true,
+      });
+      if (!base64) {
+        throw new Error("The work-order PDF could not be read after it was generated.");
+      }
+
+      const safeOrderNumber =
+        selectedOrder.number.replace(/[^a-z0-9_-]/gi, "-") || "export";
+      const generatedPdfId = new File(generatedPdfUri).name.replace(
+        /\.pdf$/i,
+        "",
+      );
+      const fileName = `work-order-${safeOrderNumber}-${generatedPdfId}.pdf`;
+      setPdfExportModal({ status: "saving" });
+
+      if (Platform.OS === "android") {
+        const storage = FileSystemLegacy.StorageAccessFramework;
+        const saveToDirectory = async (directoryUri: string) => {
+          const fileUri = await storage.createFileAsync(
+            directoryUri,
+            fileName.replace(/\.pdf$/i, ""),
+            "application/pdf",
+          );
+          await storage.writeAsStringAsync(fileUri, base64, {
+            encoding: FileSystemLegacy.EncodingType.Base64,
+          });
+        };
+
+        let directoryUri = await SecureStore.getItemAsync(
+          WORK_ORDER_PDF_DIRECTORY_KEY,
+        );
+        if (directoryUri) {
+          try {
+            await saveToDirectory(directoryUri);
+          } catch (error) {
+            console.warn(
+              "[WorkOrderScreen] Saved PDF folder is no longer available; requesting access again",
+              error,
+            );
+            await SecureStore.deleteItemAsync(WORK_ORDER_PDF_DIRECTORY_KEY);
+            directoryUri = null;
+          }
+        }
+
+        if (!directoryUri) {
+          const permission =
+            await storage.requestDirectoryPermissionsAsync(
+              storage.getUriForDirectoryInRoot("Download"),
+            );
+          if (!permission.granted) {
+              setPdfExportModal({ status: "cancelled" });
+            return;
+          }
+
+          directoryUri = permission.directoryUri;
+          await SecureStore.setItemAsync(
+            WORK_ORDER_PDF_DIRECTORY_KEY,
+            directoryUri,
+          );
+          await saveToDirectory(directoryUri);
+        }
+      } else {
+        const savedPdf = new File(Paths.document, fileName);
+        savedPdf.create({ intermediates: true });
+        savedPdf.write(base64, { encoding: "base64" });
+        if (!savedPdf.exists || savedPdf.size === 0) {
+          throw new Error("The work-order PDF was not saved to device storage.");
+        }
+      }
+
+      setPdfExportModal({
+        status: "success",
+        message:
+          Platform.OS === "android"
+            ? `Work order ${selectedOrder.number} was saved to the selected folder. Details and Execution are included.`
+            : `Work order ${selectedOrder.number} was saved to this app's Documents folder, available in the Files app. Details and Execution are included.`,
+      });
+    } catch (error) {
+      console.error("[WorkOrderScreen] Failed to export work-order PDF", error);
+      setPdfExportModal({
+        status: "error",
+        message: getApiErrorMessage(
+          error,
+          "The work-order PDF could not be created. Please try again.",
+        ),
+      });
+    } finally {
+      setIsExportingPDF(false);
     }
   };
 
@@ -2088,7 +2309,182 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
         !extensionSubmitting,
     );
     return (
-      <View style={styles.container}>
+      <KeyboardAvoidingView
+        style={styles.container}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+      >
+        <Modal
+          visible={checklistRequiredError !== null}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setChecklistRequiredError(null)}
+        >
+          <View style={styles.checklistRequiredBackdrop}>
+            <View style={styles.checklistRequiredCard} accessibilityViewIsModal>
+              <View style={styles.checklistRequiredHeader}>
+                <View style={styles.checklistRequiredIcon}>
+                  <Svg width={28} height={28} viewBox="0 0 24 24" fill="none">
+                    <Path
+                      d="M12 3.25 2.55 19.5h18.9L12 3.25Z"
+                      stroke="#1a1f6e"
+                      strokeWidth={1.8}
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                    <Path
+                      d="M12 9v4.25M12 16.25h.01"
+                      stroke="#1a1f6e"
+                      strokeWidth={1.8}
+                      strokeLinecap="round"
+                    />
+                  </Svg>
+                </View>
+                <Text style={styles.checklistRequiredTitle} accessibilityRole="header">
+                  Assigned checklist required
+                </Text>
+              </View>
+              <ScrollView
+                style={styles.checklistRequiredBody}
+                contentContainerStyle={styles.checklistRequiredBodyContent}
+                showsVerticalScrollIndicator
+              >
+                <Text style={styles.checklistRequiredMessage}>
+                  {checklistRequiredError?.split("\n")[0]}
+                </Text>
+                {checklistRequiredError
+                  ?.split("\n")
+                  .slice(1)
+                  .filter((line) => line.startsWith("- "))
+                  .map((line, index) => (
+                    <View key={`${index}-${line}`} style={styles.checklistRequiredItem}>
+                      <View style={styles.checklistRequiredBullet} />
+                      <Text style={styles.checklistRequiredItemText}>{line.slice(2)}</Text>
+                    </View>
+                  ))}
+                <View style={styles.checklistRequiredGuidance}>
+                  <Text style={styles.checklistRequiredGuidanceText}>
+                    Ask Operations to assign or refresh the checklist before starting maintenance.
+                  </Text>
+                </View>
+              </ScrollView>
+              <TouchableOpacity
+                style={styles.checklistRequiredButton}
+                onPress={() => setChecklistRequiredError(null)}
+                accessibilityRole="button"
+                accessibilityLabel="Acknowledge assigned checklist requirement"
+              >
+                <Text style={styles.checklistRequiredButtonText}>Got it</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Modal>
+        <Modal
+          visible={pdfExportModal !== null}
+          transparent
+          animationType="fade"
+          statusBarTranslucent
+          onRequestClose={() => {
+            if (!isExportingPDF) setPdfExportModal(null);
+          }}
+        >
+          {pdfExportModal ? (
+            <View style={styles.pdfExportBackdrop}>
+              <View style={styles.pdfExportCard} accessibilityViewIsModal>
+                <View
+                  style={[
+                    styles.pdfExportStatusIcon,
+                    pdfExportModal.status === "success"
+                      ? styles.pdfExportSuccessIcon
+                      : pdfExportModal.status === "error"
+                        ? styles.pdfExportErrorIcon
+                        : pdfExportModal.status === "cancelled"
+                          ? styles.pdfExportCancelledIcon
+                          : styles.pdfExportInfoIcon,
+                  ]}
+                >
+                  {pdfExportModal.status === "preparing" ||
+                  pdfExportModal.status === "saving" ? (
+                    <ActivityIndicator
+                      size="large"
+                      color="#1a1f6e"
+                      accessibilityLabel={
+                        pdfExportModal.status === "preparing"
+                          ? "Preparing PDF"
+                          : "Saving PDF"
+                      }
+                    />
+                  ) : (
+                    <Svg width={28} height={28} viewBox="0 0 24 24" fill="none">
+                      <Path
+                        d={
+                          pdfExportModal.status === "success"
+                            ? "m5 12.5 4.5 4.25L19 7"
+                            : pdfExportModal.status === "error"
+                              ? "M12 8v5m0 3h.01"
+                              : pdfExportModal.status === "cancelled"
+                                ? "m7 7 10 10M17 7 7 17"
+                                : "M7 3h7l4 4v14H7zM14 3v5h5M9 13h6M9 16h6"
+                        }
+                        stroke={
+                          pdfExportModal.status === "success"
+                            ? "#16804a"
+                            : pdfExportModal.status === "error"
+                              ? "#b42318"
+                              : pdfExportModal.status === "cancelled"
+                                ? "#9a6700"
+                                : "#1a1f6e"
+                        }
+                        strokeWidth={1.8}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </Svg>
+                  )}
+                </View>
+                <Text style={styles.pdfExportTitle} accessibilityRole="header">
+                  {pdfExportModal.status === "preparing"
+                    ? "Preparing your PDF"
+                    : pdfExportModal.status === "saving"
+                      ? "Saving your PDF"
+                      : pdfExportModal.status === "success"
+                        ? "PDF downloaded"
+                        : pdfExportModal.status === "cancelled"
+                          ? "Download cancelled"
+                          : pdfExportModal.status === "print"
+                            ? "Print dialog opened"
+                            : "PDF export failed"}
+                </Text>
+                <Text
+                  style={styles.pdfExportMessage}
+                  accessibilityLiveRegion={
+                    isExportingPDF ? "polite" : "assertive"
+                  }
+                >
+                  {pdfExportModal.status === "preparing"
+                    ? "Combining work-order details and execution checklist."
+                    : pdfExportModal.status === "saving"
+                      ? "Saving the completed PDF to your device."
+                      : pdfExportModal.status === "success" ||
+                          pdfExportModal.status === "error"
+                        ? pdfExportModal.message
+                        : pdfExportModal.status === "cancelled"
+                          ? "No PDF was saved. You can try again and choose a destination folder."
+                          : "Choose Save as PDF in the print dialog to finish saving the work order."}
+                </Text>
+                {!isExportingPDF ? (
+                  <TouchableOpacity
+                    style={styles.pdfExportButton}
+                    onPress={() => setPdfExportModal(null)}
+                    accessibilityRole="button"
+                    accessibilityLabel="Close PDF export message"
+                  >
+                    <Text style={styles.pdfExportButtonText}>Done</Text>
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+            </View>
+          ) : null}
+        </Modal>
         <Modal
           visible={previewAttachmentUri !== null}
           transparent
@@ -2127,8 +2523,32 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
           >
             <Text style={styles.backButtonText}>‹ Back to Assigned Orders</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.exportButton} onPress={exportPDF}>
-            <Text style={styles.exportButtonText}>📥 Export to PDF</Text>
+          <TouchableOpacity
+            style={styles.exportButton}
+            onPress={() => void exportPDF()}
+            disabled={isExportingPDF}
+            accessibilityRole="button"
+            accessibilityLabel="Export work order details and execution to PDF"
+            accessibilityState={{ busy: isExportingPDF, disabled: isExportingPDF }}
+          >
+            <View style={styles.exportButtonContent}>
+              {isExportingPDF ? (
+                <ActivityIndicator size="small" color="#ffffff" />
+              ) : (
+                <Svg width={16} height={16} viewBox="0 0 24 24" fill="none">
+                  <Path
+                    d="M12 3v11m0 0 4-4m-4 4-4-4M5 17v3h14v-3"
+                    stroke="#ffffff"
+                    strokeWidth={2}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </Svg>
+              )}
+              <Text style={styles.exportButtonText}>
+                {isExportingPDF ? "Preparing PDF..." : "Export to PDF"}
+              </Text>
+            </View>
           </TouchableOpacity>
         </View>
 
@@ -2166,7 +2586,25 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
         </View>
 
         <ScrollView
-          contentContainerStyle={styles.detailContent}
+          ref={detailScrollRef}
+          style={styles.detailScroll}
+          contentContainerStyle={[
+            styles.detailContent,
+            activeStep === "execution" &&
+              keyboardVisible && {
+                paddingBottom: Math.max(16, detailViewportHeight / 2),
+              },
+          ]}
+          onLayout={(event) => {
+            const height = event.nativeEvent.layout.height;
+            detailViewportHeightRef.current = height;
+            setDetailViewportHeight(height);
+            if (keyboardVisibleRef.current && focusedExecutionCardLayoutRef.current) {
+              requestAnimationFrame(() => centerFocusedExecutionCard());
+            }
+          }}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
           refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={refreshWorkOrders} colors={["#1a1f6e", "#d4a93f"]} tintColor="#1a1f6e" progressBackgroundColor="#ffffff" />}
         >
           {/* Step 1: Details */}
@@ -2496,7 +2934,15 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
 
           {/* Step 2: Execution */}
           {activeStep === "execution" && (
-            <View style={styles.detailCard}>
+            <View
+              style={styles.detailCard}
+              onLayout={(event) => {
+                executionDetailCardTopRef.current = event.nativeEvent.layout.y;
+                if (keyboardVisibleRef.current && focusedExecutionCardLayoutRef.current) {
+                  requestAnimationFrame(() => centerFocusedExecutionCard());
+                }
+              }}
+            >
               <Text style={styles.sectionTitle}>Execution Checklist</Text>
               <Text style={styles.sectionText}>
                 {isChiefMechanicRole
@@ -2519,7 +2965,14 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
                           : "PENDING";
 
                   return (
-                    <View key={item.id} style={styles.checklistItemCard}>
+                    <View
+                      key={item.id}
+                      style={styles.checklistItemCard}
+                      onLayout={(event) => {
+                        const { y, height } = event.nativeEvent.layout;
+                        executionCardLayoutsRef.current.set(item.id, { y, height });
+                      }}
+                    >
                       <Text style={styles.checklistItemLabel}>
                         {item.label}
                       </Text>
@@ -2567,6 +3020,9 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
                         placeholder="Add note"
                         placeholderTextColor="#94a3b8"
                         value={item.note}
+                        onFocus={() =>
+                          focusExecutionCard(executionCardLayoutsRef.current.get(item.id) ?? null)
+                        }
                         onChangeText={(text) =>
                           updateExecutionNote(selectedOrder.id, item.id, text)
                         }
@@ -2576,7 +3032,13 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
                 })
               )}
 
-              <View style={styles.remarksSection}>
+              <View
+                style={styles.remarksSection}
+                onLayout={(event) => {
+                  const { y, height } = event.nativeEvent.layout;
+                  maintenanceRemarksLayoutRef.current = { y, height };
+                }}
+              >
                 <Text style={styles.remarksLabel}>Maintenance Work Remarks</Text>
                 <Text style={styles.sectionText}>Describe the maintenance work performed and any additional information about this activity.</Text>
                 <TextInput
@@ -2586,6 +3048,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
                   placeholderTextColor="#94a3b8"
                   multiline
                   value={selectedOrder.maintenanceRemarks}
+                  onFocus={() => focusExecutionCard(maintenanceRemarksLayoutRef.current)}
                   onChangeText={(text) => updateMaintenanceRemarks(selectedOrder.id, text)}
                 />
               </View>
@@ -2970,57 +3433,86 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
           </TouchableOpacity>
           : null}
         </View>
-      </View>
+      </KeyboardAvoidingView>
     );
   }
 
   return (
-    <View style={styles.container}>
+    <ScrollView
+      style={styles.listPageScroll}
+      contentContainerStyle={styles.listPageContent}
+      keyboardShouldPersistTaps="handled"
+      keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+      refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={refreshWorkOrders} colors={["#1a1f6e", "#d4a93f"]} tintColor="#1a1f6e" progressBackgroundColor="#ffffff" />}
+    >
       <View style={styles.pageHeader}>
         <MobilePageHeader
           title="Work Orders"
           subtitle={isChiefMechanicRole
-            ? "Monitor mechanic progress and review completed submissions"
+            ? "Review mechanic submissions and monitor supervised work"
             : "Your assigned work orders grouped by mechanic"}
         />
       </View>
-      <MaintenanceStatusLegend />
+      {!isChiefMechanicRole ? <MaintenanceStatusLegend /> : null}
 
       {isChiefMechanicRole ? (
         <View style={styles.chiefQueueToggle}>
           <TouchableOpacity
-            style={[styles.chiefQueueTab, chiefQueueMode === "monitoring" && styles.chiefQueueTabActive]}
-            onPress={() => { setChiefQueueMode("monitoring"); setCurrentPage(1); }}
+            style={[styles.chiefQueueTab, activeChiefQueueMode === "review" && styles.chiefQueueTabActive]}
+            onPress={() => { setChiefQueueMode("review"); setCurrentPage(1); }}
             accessibilityRole="tab"
-            accessibilityState={{ selected: chiefQueueMode === "monitoring" }}
+            accessibilityState={{ selected: activeChiefQueueMode === "review" }}
+            accessibilityLabel={`Needs review, ${chiefReviewOrders.length} submissions`}
           >
-            <Text style={[styles.chiefQueueTabText, chiefQueueMode === "monitoring" && styles.chiefQueueTabTextActive]}>
-              Monitoring ({chiefSupervisedOrders.length})
+            <Text style={[styles.chiefQueueTabText, activeChiefQueueMode === "review" && styles.chiefQueueTabTextActive]}>
+              Needs review ({chiefReviewOrders.length})
             </Text>
           </TouchableOpacity>
           <TouchableOpacity
-            style={[styles.chiefQueueTab, chiefQueueMode === "review" && styles.chiefQueueTabActive]}
-            onPress={() => { setChiefQueueMode("review"); setCurrentPage(1); }}
+            style={[styles.chiefQueueTab, activeChiefQueueMode === "monitoring" && styles.chiefQueueTabActive]}
+            onPress={() => { setChiefQueueMode("monitoring"); setCurrentPage(1); }}
             accessibilityRole="tab"
-            accessibilityState={{ selected: chiefQueueMode === "review" }}
+            accessibilityState={{ selected: activeChiefQueueMode === "monitoring" }}
+            accessibilityLabel={`All supervised, ${chiefSupervisedOrders.length} work orders`}
           >
-            <Text style={[styles.chiefQueueTabText, chiefQueueMode === "review" && styles.chiefQueueTabTextActive]}>
-              Awaiting Review ({chiefReviewOrders.length})
+            <Text style={[styles.chiefQueueTabText, activeChiefQueueMode === "monitoring" && styles.chiefQueueTabTextActive]}>
+              All supervised ({chiefSupervisedOrders.length})
             </Text>
           </TouchableOpacity>
         </View>
       ) : null}
 
       <View style={styles.searchRow}>
-        <TextInput
-          style={styles.searchInput}
-          value={searchQuery}
-          onChangeText={setSearchQuery}
-          accessibilityLabel="Search work orders by number, plate, task, or mechanic"
-          autoCapitalize="none"
-          placeholder="Search vehicle, task, or mechanic…"
-          placeholderTextColor="#94a3b8"
-        />
+        <View style={styles.searchInputWrap}>
+          <TextInput
+            style={styles.searchInput}
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            onSubmitEditing={() => void searchHistory.recordSearch(searchQuery)}
+            accessibilityLabel="Search work orders by number, plate, task, or mechanic"
+            autoCapitalize="none"
+            placeholder="Search vehicle, task, or mechanic…"
+            placeholderTextColor="#94a3b8"
+            returnKeyType="search"
+          />
+          {searchQuery ? (
+            <TouchableOpacity
+              accessibilityRole="button"
+              accessibilityLabel="Clear work order search text"
+              onPress={() => setSearchQuery("")}
+              style={styles.searchClearButton}
+            >
+              <Svg width={18} height={18} viewBox="0 0 24 24" fill="none">
+                <Path
+                  d="m6 6 12 12M18 6 6 18"
+                  stroke="#64748b"
+                  strokeWidth={2}
+                  strokeLinecap="round"
+                />
+              </Svg>
+            </TouchableOpacity>
+          ) : null}
+        </View>
         <TouchableOpacity style={styles.filterButton} onPress={() => setShowFilters((value) => !value)}
           accessibilityRole="button" accessibilityLabel="Toggle work order filters" accessibilityState={{ expanded: showFilters }}>
           <Svg width={26} height={26} viewBox="0 0 24 24" fill="none" accessibilityLabel="Filter">
@@ -3035,6 +3527,65 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
           {statusFilter || mechanicFilterId || typeFilter || priorityFilter ? <View style={styles.activeFilterDot} /> : null}
         </TouchableOpacity>
       </View>
+
+      {searchHistory.error ? (
+        <Text accessibilityRole="alert" style={styles.searchHistoryError}>
+          {searchHistory.error}
+        </Text>
+      ) : null}
+      {!searchQuery.trim() ? (
+        <View style={styles.searchHistorySection}>
+          <View style={styles.searchHistoryHeader}>
+            {isChiefMechanicRole ? (
+              <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityLabel={recentSearchesExpanded ? "Hide recent searches" : "Show recent searches"}
+                accessibilityState={{ expanded: recentSearchesExpanded }}
+                onPress={() => setRecentSearchesExpanded((expanded) => !expanded)}
+                style={styles.searchHistoryExpandButton}
+              >
+                <Text style={styles.searchHistoryHeading}>Recent searches</Text>
+                <Text style={styles.searchHistoryExpandText}>
+                  {recentSearchesExpanded ? "Hide" : "Show"}
+                </Text>
+              </TouchableOpacity>
+            ) : (
+              <Text style={styles.searchHistoryHeading}>Recent searches</Text>
+            )}
+            {(!isChiefMechanicRole || recentSearchesExpanded) && searchHistory.items.length > 0 ? (
+              <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityLabel="Clear work order search history"
+                onPress={() => void searchHistory.clearHistory()}
+                style={styles.searchHistoryClear}
+              >
+                <Text style={styles.searchHistoryClearText}>Clear</Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
+          {(!isChiefMechanicRole || recentSearchesExpanded) ? (
+            searchHistory.loading ? (
+              <Text style={styles.searchHistoryStatus}>Loading recent searches…</Text>
+            ) : searchHistory.error ? null : searchHistory.items.length > 0 ? (
+              searchHistory.items.map((query, index) => (
+                <TouchableOpacity
+                  key={`${query}-${index}`}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Search work orders for ${query}`}
+                  onPress={() => setSearchQuery(query)}
+                  style={styles.searchHistoryItem}
+                >
+                  <Text numberOfLines={1} style={styles.searchHistoryText}>
+                    {query}
+                  </Text>
+                </TouchableOpacity>
+              ))
+            ) : (
+              <Text style={styles.searchHistoryStatus}>No recent searches yet.</Text>
+            )
+          ) : null}
+        </View>
+      ) : null}
 
       {showFilters && (
         <View style={styles.filterPanel}>
@@ -3085,86 +3636,136 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
         <Text style={styles.sectionText}>Mechanic: {mechanicFilterName}</Text>
       ) : null}
       <View style={styles.searchRow}>
-        <Text style={styles.sectionText}>{filteredOrders.length} of {visibleOrders.length} work orders</Text>
+        <Text style={styles.sectionText}>
+          {isChiefMechanicRole && activeChiefQueueMode === "review"
+            ? `${filteredOrders.length} submissions to review`
+            : isChiefMechanicRole
+              ? `${filteredOrders.length} of ${visibleOrders.length} supervised work orders`
+              : `${filteredOrders.length} of ${visibleOrders.length} work orders`}
+        </Text>
         {filtersActive && <TouchableOpacity onPress={clearFilters} accessibilityRole="button"><Text style={{ color: "#1a1f6e", fontWeight: "700" }}>Clear filters</Text></TouchableOpacity>}
       </View>
 
-      <ScrollView
-        contentContainerStyle={styles.listContent}
-        refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={refreshWorkOrders} colors={["#1a1f6e", "#d4a93f"]} tintColor="#1a1f6e" progressBackgroundColor="#ffffff" />}
-      >
+      <View style={styles.listContent}>
         {isLoading ? (
           <View style={styles.emptyStateCard}>
             <Text style={styles.emptyStateTitle}>Loading work orders…</Text>
           </View>
         ) : filteredOrders.length === 0 ? (
           <View style={styles.emptyStateCard}>
-            <Text style={styles.emptyStateTitle}>{filtersActive ? "No matching work orders" : "No assigned work orders"}</Text>
+            <Text style={styles.emptyStateTitle}>
+              {filtersActive
+                ? "No matching work orders"
+                : isChiefMechanicRole
+                  ? activeChiefQueueMode === "review"
+                    ? "You're all caught up"
+                    : "No supervised work orders yet"
+                  : "No assigned work orders"}
+            </Text>
             <Text style={styles.emptyStateText}>
-              {filtersActive ? "Try a different search or clear the filters." : accessRole === "mechanic"
-                ? "No execution work orders are assigned to you right now."
-                : chiefQueueMode === "review"
-                  ? "No completed work orders are waiting for your review."
-                  : "No work orders are assigned to you for supervision right now."}
+              {filtersActive
+                ? "Try a different search or clear the filters."
+                : accessRole === "mechanic"
+                  ? "No execution work orders are assigned to you right now."
+                  : activeChiefQueueMode === "review"
+                    ? "New mechanic submissions that need your review will appear here."
+                    : "Work orders assigned to you for supervision will appear here."}
             </Text>
           </View>
         ) : (
-          pageOrders.map((order) => (
+          pageOrders.map((order) => {
+            const progress = checklistProgress(order);
+            const needsChiefReview =
+              isChiefMechanicRole && activeChiefQueueMode === "review";
+
+            return (
                 <Pressable
                   key={order.id}
-                  style={styles.orderCard}
-                  onPress={() => openOrder(order.id)}
+                  style={[styles.orderCard, isChiefMechanicRole && styles.chiefOrderCard]}
+                  onPress={() => void openSearchedOrder(order.id)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${needsChiefReview ? "Review" : "Open"} work order ${order.number} for ${order.plate}`}
                 >
                   <View style={styles.orderCardHeader}>
                     <Text style={styles.orderNumber}>{order.number}</Text>
-                    {renderStatusBadge(order.status)}
+                    {needsChiefReview ? (
+                      <View style={styles.chiefReviewBadge}>
+                        <Text style={styles.chiefReviewBadgeText}>Needs review</Text>
+                      </View>
+                    ) : renderStatusBadge(order.status)}
                   </View>
-                  <View style={styles.cardBody}>
-                    <Text style={styles.cardValue} numberOfLines={1}>
-                      <Text style={styles.cardBoldLabel}>{order.plate}</Text>
-                    </Text>
-                    <View style={styles.cardRow}>
-                      <Text style={styles.cardLabel}>Maintenance Type</Text>
-                    </View>
-                    <Text style={styles.cardValue}>
-                      {order.maintenanceType}
-                    </Text>
-                    <View style={styles.cardRow}>
-                      <Text style={styles.cardLabel}>Priority</Text>
-                    </View>
-                    {renderPriorityBadge(order.priority)}
-                    <View style={styles.cardRow}>
-                      <Text style={styles.cardLabel}>Mechanic</Text>
-                    </View>
-                    <Text style={styles.cardValue}>{order.mechanic}</Text>
-                    {isChiefMechanicRole && chiefQueueMode === "monitoring" ? (() => {
-                      const progress = checklistProgress(order);
-                      return (
-                        <View style={styles.progressSummary}>
-                          <View style={styles.cardRow}>
-                            <Text style={styles.cardLabel}>Mechanic Checklist Progress</Text>
-                            <Text style={styles.progressPercent}>{progress.percent}%</Text>
-                          </View>
+                  {isChiefMechanicRole ? (
+                    <View style={styles.chiefCardBody}>
+                      <View style={styles.chiefVehicleRow}>
+                        <Text style={styles.chiefPlate} numberOfLines={1}>{order.plate}</Text>
+                        {renderPriorityBadge(order.priority)}
+                      </View>
+                      <Text style={styles.chiefMetadata} numberOfLines={2}>
+                        {order.maintenanceType} · {order.mechanic}
+                      </Text>
+                      <View style={styles.chiefChecklist}>
+                        <View style={styles.chiefChecklistHeader}>
+                          <Text style={styles.chiefChecklistLabel}>Mechanic checklist</Text>
+                          {progress.total > 0 ? (
+                            <Text style={styles.progressPercent}>
+                              {progress.percent}% · {progress.completed}/{progress.total}
+                            </Text>
+                          ) : null}
+                        </View>
+                        {progress.total > 0 ? (
                           <View style={styles.progressTrack}>
                             <View style={[styles.progressFill, { width: `${progress.percent}%` }]} />
                           </View>
-                          <Text style={styles.progressCaption}>
-                            {progress.completed} of {progress.total} items complete
+                        ) : (
+                          <Text style={styles.chiefChecklistUnavailable}>
+                            No checklist items configured
                           </Text>
+                        )}
+                      </View>
+                      <View style={styles.chiefOrderFooter}>
+                        <Text style={styles.chiefDateCreated}>Created {order.dateCreated}</Text>
+                        <View style={styles.chiefCardAction}>
+                          <Text style={styles.chiefCardActionText}>
+                            {needsChiefReview ? "Review submission" : "View progress"}
+                          </Text>
+                          <Text style={styles.cardArrow}>›</Text>
                         </View>
-                      );
-                    })() : null}
-                    <View style={styles.cardRow}>
-                      <Text style={styles.cardLabel}>Date Created</Text>
+                      </View>
                     </View>
-                    <Text style={styles.cardValue}>{order.dateCreated}</Text>
-                  </View>
-                  <View style={styles.orderCardFooter}>
-                    <Text style={styles.cardHint}>{isChiefMechanicRole && chiefQueueMode === "monitoring" ? "View mechanic progress" : "Open details"}</Text>
-                    <Text style={styles.cardArrow}>›</Text>
-                  </View>
+                  ) : (
+                    <>
+                      <View style={styles.cardBody}>
+                        <Text style={styles.cardValue} numberOfLines={1}>
+                          <Text style={styles.cardBoldLabel}>{order.plate}</Text>
+                        </Text>
+                        <View style={styles.cardRow}>
+                          <Text style={styles.cardLabel}>Maintenance Type</Text>
+                        </View>
+                        <Text style={styles.cardValue}>
+                          {order.maintenanceType}
+                        </Text>
+                        <View style={styles.cardRow}>
+                          <Text style={styles.cardLabel}>Priority</Text>
+                        </View>
+                        {renderPriorityBadge(order.priority)}
+                        <View style={styles.cardRow}>
+                          <Text style={styles.cardLabel}>Mechanic</Text>
+                        </View>
+                        <Text style={styles.cardValue}>{order.mechanic}</Text>
+                        <View style={styles.cardRow}>
+                          <Text style={styles.cardLabel}>Date Created</Text>
+                        </View>
+                        <Text style={styles.cardValue}>{order.dateCreated}</Text>
+                      </View>
+                      <View style={styles.orderCardFooter}>
+                        <Text style={styles.cardHint}>Open details</Text>
+                        <Text style={styles.cardArrow}>›</Text>
+                      </View>
+                    </>
+                  )}
                 </Pressable>
-          ))
+            );
+          })
         )}
         {!isLoading && filteredOrders.length > 0 && totalPages > 1 ? (
           <View style={styles.pagination}>
@@ -3189,8 +3790,8 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialDashb
             </TouchableOpacity>
           </View>
         ) : null}
-      </ScrollView>
-    </View>
+      </View>
+    </ScrollView>
   );
 }
 
@@ -3198,13 +3799,33 @@ const styles = StyleSheet.create({
   chiefQueueToggle: { flexDirection: "row", backgroundColor: "#e2e8f0", borderRadius: 12, padding: 4, gap: 4, marginBottom: 12 },
   chiefQueueTab: { flex: 1, minHeight: 44, paddingHorizontal: 8, borderRadius: 9, alignItems: "center", justifyContent: "center" },
   chiefQueueTabActive: { backgroundColor: "#ffffff", shadowColor: "#000", shadowOpacity: 0.06, shadowRadius: 4, shadowOffset: { width: 0, height: 1 } },
-  chiefQueueTabText: { color: "#475569", fontSize: 12, fontWeight: "700", textAlign: "center" },
+  chiefQueueTabText: { color: "#475569", fontSize: 11, fontWeight: "700", textAlign: "center" },
   chiefQueueTabTextActive: { color: "#1a1f6e" },
-  progressSummary: { marginTop: 8, padding: 10, borderRadius: 10, backgroundColor: "#f8fafc", borderWidth: 1, borderColor: "#e2e8f0" },
+  chiefOrderCard: { padding: 12, gap: 8 },
+  chiefCardBody: { gap: 8 },
+  chiefVehicleRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 },
+  chiefPlate: { flex: 1, minWidth: 0, color: "#0d0d0d", fontSize: 16, fontWeight: "800" },
+  chiefMetadata: { color: "#475569", fontSize: 13, fontWeight: "600" },
+  chiefChecklist: { gap: 6 },
+  chiefChecklistHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 },
+  chiefChecklistLabel: { color: "#64748b", fontSize: 11, fontWeight: "700" },
+  chiefChecklistUnavailable: { color: "#64748b", fontSize: 11 },
+  chiefOrderFooter: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+    borderTopWidth: 1,
+    borderTopColor: "#e2e8f0",
+    paddingTop: 8,
+    marginTop: 2,
+  },
+  chiefDateCreated: { flex: 1, color: "#64748b", fontSize: 11 },
+  chiefCardAction: { flexDirection: "row", alignItems: "center", gap: 2 },
+  chiefCardActionText: { color: "#1a1f6e", fontSize: 12, fontWeight: "700" },
   progressPercent: { color: "#1a1f6e", fontSize: 12, fontWeight: "800" },
   progressTrack: { height: 7, marginTop: 7, borderRadius: 99, overflow: "hidden", backgroundColor: "#e2e8f0" },
   progressFill: { height: "100%", borderRadius: 99, backgroundColor: "#1a1f6e" },
-  progressCaption: { color: "#64748b", fontSize: 11, marginTop: 5 },
   filterPanel: { padding: 12, backgroundColor: "#ffffff", borderRadius: 12, marginBottom: 12 },
   filterMenuSection: { marginBottom: 8 },
   filterMenuHeader: { flexDirection: "row", alignItems: "center", gap: 12 },
@@ -3217,6 +3838,9 @@ const styles = StyleSheet.create({
   filterOptionTextSelected: { color: "#1a1f6e", fontWeight: "700" },
   filterOptionCheck: { color: "#1a1f6e", fontWeight: "800", fontSize: 16 },
   container: { flex: 1, backgroundColor: "#f1f5f9", padding: 16 },
+  listPageScroll: { flex: 1, backgroundColor: "#f1f5f9" },
+  listPageContent: { flexGrow: 1, padding: 16, paddingBottom: 24 },
+  detailScroll: { flex: 1, minHeight: 0 },
   pageHeader: {
     marginBottom: 12,
   },
@@ -3226,17 +3850,85 @@ const styles = StyleSheet.create({
     gap: 8,
     marginBottom: 12,
   },
+  searchInputWrap: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    borderRadius: 12,
+    backgroundColor: "#ffffff",
+    paddingLeft: 14,
+  },
   prioritySortHint: { color: "#64748b", fontSize: 12, marginTop: -8, marginBottom: 8 },
   searchInput: {
     flex: 1,
-    backgroundColor: "#ffffff",
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#e2e8f0",
-    paddingHorizontal: 14,
+    minWidth: 0,
+    paddingHorizontal: 0,
     paddingVertical: 12,
     color: "#0d0d0d",
     fontSize: 14,
+  },
+  searchClearButton: {
+    minWidth: 44,
+    minHeight: 44,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  searchHistorySection: {
+    marginTop: -4,
+    marginBottom: 12,
+  },
+  searchHistoryHeader: {
+    minHeight: 40,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  searchHistoryExpandButton: {
+    flex: 1,
+    minHeight: 44,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  searchHistoryHeading: {
+    color: "#334155",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  searchHistoryExpandText: { color: "#1a1f6e", fontSize: 12, fontWeight: "700" },
+  searchHistoryClear: {
+    minHeight: 44,
+    justifyContent: "center",
+    paddingHorizontal: 8,
+  },
+  searchHistoryClearText: {
+    color: "#1a1f6e",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  searchHistoryItem: {
+    minHeight: 44,
+    justifyContent: "center",
+    paddingHorizontal: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: "#e2e8f0",
+  },
+  searchHistoryText: {
+    color: "#334155",
+    fontSize: 14,
+  },
+  searchHistoryStatus: {
+    color: "#64748b",
+    fontSize: 13,
+    paddingVertical: 8,
+  },
+  searchHistoryError: {
+    color: "#a32121",
+    fontSize: 13,
+    lineHeight: 18,
+    marginBottom: 8,
   },
   filterButton: {
     width: 44,
@@ -3323,6 +4015,8 @@ const styles = StyleSheet.create({
   statusOverdue: workOrderStatusColors.overdue,
   statusCompleted: workOrderStatusColors.completed,
   statusBadgeText: { fontSize: 11, fontWeight: "700" },
+  chiefReviewBadge: { backgroundColor: "#fef3c7", borderColor: "#fcd34d", borderWidth: 1, borderRadius: 999, paddingHorizontal: 10, paddingVertical: 5 },
+  chiefReviewBadgeText: { color: "#92400e", fontSize: 11, fontWeight: "700" },
   priorityBadge: { alignSelf: "flex-start", borderRadius: 999, borderWidth: 1, paddingHorizontal: 10, paddingVertical: 4 },
   priorityHigh: { backgroundColor: "#fee2e2", borderColor: "#fca5a5" },
   priorityMedium: { backgroundColor: "#fef3c7", borderColor: "#fcd34d" },
@@ -3386,34 +4080,39 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 12,
-    paddingVertical: 8,
+    marginBottom: 6,
+    paddingVertical: 4,
   },
   backButton: { minHeight: 44, justifyContent: "center" },
-  backButtonText: { color: "#1a1f6e", fontWeight: "700", fontSize: 14 },
+  backButtonText: { color: "#1a1f6e", fontWeight: "700", fontSize: 13 },
   exportButton: {
     minHeight: 44,
-    paddingHorizontal: 12,
+    paddingHorizontal: 8,
     justifyContent: "center",
     alignItems: "center",
     backgroundColor: "#1a1f6e",
-    borderRadius: 10,
+    borderRadius: 8,
   },
-  exportButtonText: { color: "#ffffff", fontWeight: "700", fontSize: 12 },
+  exportButtonContent: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
+  exportButtonText: { color: "#ffffff", fontWeight: "700", fontSize: 11 },
 
   templateBanner: {
     backgroundColor: "#f5f3ff",
     borderRadius: 10,
     borderWidth: 1,
     borderColor: "#ddd6fe",
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    marginBottom: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    marginBottom: 8,
   },
   templateBannerText: {
     color: "#4c1d95",
     fontWeight: "700",
-    fontSize: 13,
+    fontSize: 12,
   },
 
   stepBar: {
@@ -3422,17 +4121,17 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     borderWidth: 1,
     borderColor: "#e2e8f0",
-    padding: 4,
-    gap: 6,
-    marginBottom: 12,
+    padding: 2,
+    gap: 4,
+    marginBottom: 8,
   },
   stepButton: {
     flex: 1,
     minHeight: 44,
     justifyContent: "center",
     alignItems: "center",
-    borderRadius: 10,
-    paddingHorizontal: 6,
+    borderRadius: 8,
+    paddingHorizontal: 4,
   },
   stepButtonActive: { backgroundColor: "#1a1f6e" },
   stepButtonText: {
@@ -3442,7 +4141,7 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
   stepButtonTextActive: { color: "#ffffff" },
-  detailContent: { paddingBottom: 140, gap: 12 },
+  detailContent: { paddingBottom: 16, gap: 12 },
   detailCard: {
     backgroundColor: "#ffffff",
     borderRadius: 16,
@@ -3749,6 +4448,183 @@ const styles = StyleSheet.create({
     width: "100%",
     height: "85%",
   },
+  checklistRequiredBackdrop: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 24,
+    backgroundColor: "rgba(12, 17, 47, 0.66)",
+  },
+  checklistRequiredCard: {
+    width: "100%",
+    maxWidth: 420,
+    maxHeight: "88%",
+    padding: 22,
+    borderRadius: 22,
+    backgroundColor: "#ffffff",
+    shadowColor: "#0c112f",
+    shadowOpacity: 0.24,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: 12 },
+    elevation: 18,
+  },
+  checklistRequiredHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+    marginBottom: 14,
+  },
+  checklistRequiredIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#fff6df",
+  },
+  checklistRequiredTitle: {
+    flex: 1,
+    color: "#1a1f6e",
+    fontSize: 19,
+    fontWeight: "800",
+    lineHeight: 25,
+  },
+  checklistRequiredBody: {
+    maxHeight: 360,
+    flexGrow: 0,
+    flexShrink: 1,
+  },
+  checklistRequiredBodyContent: {
+    gap: 12,
+    paddingBottom: 4,
+  },
+  checklistRequiredMessage: {
+    color: "#334155",
+    fontSize: 15,
+    fontWeight: "600",
+    lineHeight: 22,
+  },
+  checklistRequiredItem: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+    paddingHorizontal: 2,
+  },
+  checklistRequiredBullet: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    marginTop: 7,
+    backgroundColor: "#d4a93f",
+  },
+  checklistRequiredItemText: {
+    flex: 1,
+    color: "#475569",
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  checklistRequiredGuidance: {
+    marginTop: 4,
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: "#f1f5f9",
+  },
+  checklistRequiredGuidanceText: {
+    color: "#334155",
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  checklistRequiredButton: {
+    minHeight: 50,
+    marginTop: 18,
+    borderRadius: 13,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#1a1f6e",
+    shadowColor: "#1a1f6e",
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 4,
+  },
+  checklistRequiredButtonText: {
+    color: "#ffffff",
+    fontSize: 15,
+    fontWeight: "800",
+  },
+  pdfExportBackdrop: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 24,
+    backgroundColor: "rgba(12, 17, 47, 0.66)",
+  },
+  pdfExportCard: {
+    width: "100%",
+    maxWidth: 380,
+    padding: 26,
+    borderRadius: 22,
+    alignItems: "center",
+    backgroundColor: "#ffffff",
+    shadowColor: "#0c112f",
+    shadowOpacity: 0.24,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: 12 },
+    elevation: 18,
+  },
+  pdfExportStatusIcon: {
+    width: 58,
+    height: 58,
+    marginBottom: 18,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  pdfExportSuccessIcon: {
+    backgroundColor: "#e8f7ed",
+  },
+  pdfExportErrorIcon: {
+    backgroundColor: "#fff0ef",
+  },
+  pdfExportCancelledIcon: {
+    backgroundColor: "#fff6df",
+  },
+  pdfExportInfoIcon: {
+    backgroundColor: "#eef2ff",
+  },
+  pdfExportTitle: {
+    color: "#1a1f6e",
+    fontSize: 24,
+    fontWeight: "800",
+    lineHeight: 31,
+    textAlign: "center",
+  },
+  pdfExportMessage: {
+    marginTop: 8,
+    color: "#334155",
+    fontSize: 15,
+    lineHeight: 22,
+    textAlign: "center",
+  },
+  pdfExportButton: {
+    width: "100%",
+    minHeight: 50,
+    marginTop: 22,
+    borderRadius: 13,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#1a1f6e",
+    shadowColor: "#1a1f6e",
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 4,
+  },
+  pdfExportButtonText: {
+    color: "#ffffff",
+    fontSize: 15,
+    fontWeight: "800",
+  },
   partsInput: {
     borderWidth: 1,
     borderColor: "#e2e8f0",
@@ -3966,15 +4842,13 @@ const styles = StyleSheet.create({
   },
 
   bottomBar: {
-    position: "absolute",
-    left: 16,
-    right: 16,
-    bottom: 12,
     flexDirection: "row",
     gap: 8,
     backgroundColor: "#ffffff",
     borderRadius: 14,
     padding: 8,
+    marginTop: 8,
+    flexShrink: 0,
     borderWidth: 1,
     borderColor: "#e2e8f0",
     shadowColor: "#000",
@@ -3983,13 +4857,10 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 2 },
   },
   startDateNotice: {
-    position: "absolute",
-    left: 16,
-    right: 16,
-    bottom: 76,
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 10,
+    marginTop: 8,
     backgroundColor: "#fff7ed",
     borderWidth: 1,
     borderColor: "#fed7aa",

@@ -4,6 +4,7 @@ import type { ReactElement } from "react";
 import {
   Animated,
   ActivityIndicator,
+  Alert,
   Dimensions,
   Easing,
   Image,
@@ -19,7 +20,12 @@ import {
 import Svg, { Circle, Path } from "react-native-svg";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 
-import { clearDatabase, initializeDatabase } from "./database/database";
+import {
+  clearDatabase,
+  getMaintenanceSchedules,
+  getVehicles,
+  initializeDatabase,
+} from "./database/database";
 import { DashboardScreen } from "./screens/DashboardScreen";
 import type { DashboardWorkOrderFilter } from "./screens/workOrderDashboardFilter";
 import { MobilePageHeader } from "./components/MobilePageHeader";
@@ -35,6 +41,16 @@ import {
   AuthService,
   type AuthenticatedUser,
 } from "./services/AuthService";
+import type { MaintenanceNotification } from "./services/NotificationService";
+import {
+  buildNotificationSearchItems,
+  buildWorkOrderSearchItems,
+  filterGlobalSearchItems,
+  getGlobalSearchDestination,
+  type GlobalSearchItem,
+  type WorkOrderSearchItem,
+} from "./services/globalSearch";
+import { useSearchHistory } from "./services/useSearchHistory";
 import { isValidPhoneNumber, normalizePhoneNumber } from "./services/phoneNumber";
 import { SyncService } from "./services/SyncService";
 
@@ -80,7 +96,7 @@ const syncService = new SyncService({
 
 function DashboardTabIcon({ active }: { active: boolean }) {
   return (
-    <Svg width={30} height={30} viewBox="0 0 64 64" fill="none">
+    <Svg width={26} height={26} viewBox="0 0 64 64" fill="none">
       <Path
         d="M18 12h10v10H18zm18 0h10v10H36zm-18 18h10v10H18zm18 0h10v10H36z"
         stroke={active ? "#ffffff" : "#D4A93F"}
@@ -101,8 +117,8 @@ function WorkOrderTabIcon({ active }: { active: boolean }) {
     <Image
       source={source}
       style={{
-        width: 36,
-        height: 36,
+        width: 30,
+        height: 30,
         resizeMode: "contain",
         opacity: active ? 1 : 0.95,
         backgroundColor: "transparent",
@@ -114,7 +130,7 @@ function WorkOrderTabIcon({ active }: { active: boolean }) {
 function NotificationTabIcon({ active, count = 0 }: { active: boolean; count?: number }) {
   return (
     <View>
-    <Svg width={26} height={26} viewBox="0 0 24 24" fill="none">
+    <Svg width={22} height={22} viewBox="0 0 24 24" fill="none">
       <Path
         d="M12 4.5a4.5 4.5 0 0 1 4.5 4.5v2.1c0 .8.3 1.5.8 2.2l1.2 1.5c.6.7.1 1.7-.8 1.7H6.3c-.9 0-1.4-1-.8-1.7l1.2-1.5c.5-.7.8-1.4.8-2.2V9A4.5 4.5 0 0 1 12 4.5Z"
         stroke={active ? "#ffffff" : "#D4A93F"}
@@ -128,7 +144,7 @@ function NotificationTabIcon({ active, count = 0 }: { active: boolean; count?: n
         strokeLinecap="round"
       />
     </Svg>
-    {count > 0 ? <Text accessibilityLabel={`${count} unread notifications`} style={{ position: "absolute", top: -9, right: -15, backgroundColor: "#a32121", color: "white", borderRadius: 10, paddingHorizontal: 5, fontSize: 11 }}>{count > 99 ? "99+" : count}</Text> : null}
+    {count > 0 ? <Text accessibilityLabel={`${count} unread notifications`} style={{ position: "absolute", top: -8, right: -13, backgroundColor: "#a32121", color: "white", borderRadius: 10, paddingHorizontal: 4, fontSize: 10 }}>{count > 99 ? "99+" : count}</Text> : null}
     </View>
   );
 }
@@ -140,8 +156,8 @@ function ProfileTabIcon({ active }: { active: boolean }) {
     <Image
       source={source}
       style={{
-        width: 36,
-        height: 36,
+        width: 30,
+        height: 30,
         resizeMode: "contain",
         opacity: active ? 1 : 0.95,
         backgroundColor: "transparent",
@@ -221,7 +237,9 @@ export default function App() {
   const [startupError, setStartupError] = useState<string | null>(null);
   const [user, setUser] = useState<AuthenticatedUser | null>(null);
   const inbox = useNotifications(user?.id);
+  const globalSearchHistory = useSearchHistory(user?.id, "global");
   const [notificationOrderId, setNotificationOrderId] = useState<string | null>(null);
+  const [selectedWorkOrderId, setSelectedWorkOrderId] = useState<string | null>(null);
   const [profileForm, setProfileForm] = useState({
     firstName: "",
     lastName: "",
@@ -246,6 +264,11 @@ export default function App() {
   const [profilePullRefreshing, setProfilePullRefreshing] = useState(false);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [searchWorkOrderItems, setSearchWorkOrderItems] = useState<
+    WorkOrderSearchItem[]
+  >([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
   const [activeScreen, setActiveScreen] = useState<
     "dashboard" | "work-orders" | "notifications" | "profile"
   >("dashboard");
@@ -257,6 +280,39 @@ export default function App() {
     passwordForm.current && passwordForm.next && passwordForm.confirm &&
       passwordForm.next === passwordForm.confirm,
   );
+
+  useEffect(() => {
+    if (!isSearchOpen || !user) return;
+    let active = true;
+    void Promise.all([getMaintenanceSchedules(), getVehicles()])
+      .then(([schedules, vehicles]) => {
+        if (!active) return;
+        const role =
+          user.roles.find((item) => item.system === "VMMS")?.role ===
+          "CHIEF_MECHANIC"
+            ? "chiefMechanic"
+            : "mechanic";
+        setSearchWorkOrderItems(
+          buildWorkOrderSearchItems(schedules, vehicles, user.id, role),
+        );
+      })
+      .catch((error: unknown) => {
+        if (!active) return;
+        setSearchWorkOrderItems([]);
+        setSearchError(
+          error instanceof Error && error.message.trim()
+            ? error.message
+            : "Unable to load cached work orders for search.",
+        );
+      })
+      .finally(() => {
+        if (active) setSearchLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [isSearchOpen, user]);
 
   useEffect(() => {
     if (!user) return;
@@ -315,6 +371,11 @@ export default function App() {
     } finally {
       setUser(null);
       setActiveScreen("dashboard");
+      setIsSearchOpen(false);
+      setSearchQuery("");
+      setSearchWorkOrderItems([]);
+      setSearchError(null);
+      setSearchLoading(false);
     }
   };
 
@@ -428,6 +489,7 @@ export default function App() {
     screen: "dashboard" | "work-orders" | "notifications" | "profile",
   ) => {
     setNotificationOrderId(null);
+    setSelectedWorkOrderId(null);
     setDashboardWorkOrderFilter(null);
     setActiveScreen(screen);
     setNavigationReloadKey((key) => key + 1);
@@ -435,32 +497,70 @@ export default function App() {
     if (screen === "profile") void refreshProfile();
   };
 
+  const openGlobalSearch = () => {
+    setSearchQuery("");
+    setSearchWorkOrderItems([]);
+    setSearchError(null);
+    setSearchLoading(true);
+    setIsSearchOpen(true);
+  };
+
+  const closeGlobalSearch = () => {
+    setIsSearchOpen(false);
+    setSearchQuery("");
+    setSearchLoading(false);
+    setSearchError(null);
+  };
+
+  const openNotification = (notification: MaintenanceNotification) => {
+    void inbox.markRead(notification);
+    if (notification.scheduleId) {
+      setNotificationOrderId(notification.scheduleId);
+      setSelectedWorkOrderId(notification.scheduleId);
+      setDashboardWorkOrderFilter(null);
+      setActiveScreen("work-orders");
+      setNavigationReloadKey((key) => key + 1);
+    }
+  };
+
   const openDashboardWorkOrders = (filter: DashboardWorkOrderFilter) => {
     setNotificationOrderId(null);
+    setSelectedWorkOrderId(null);
     setDashboardWorkOrderFilter(filter);
     setActiveScreen("work-orders");
     setNavigationReloadKey((key) => key + 1);
   };
 
-  const globalSearchItems = [
-    { title: "Truck 204 - PM Check", category: "Vehicles" },
-    { title: "Hydraulic leak inspection", category: "Tasks" },
-    { title: "Oil change reminder", category: "Notifications" },
-    { title: "Maintenance record - Engine 12", category: "Maintenance" },
-    { title: "Juan dela Cruz", category: "Employees" },
-    { title: "Crane inspection report", category: "Records" },
-    { title: "Inspection overdue", category: "Alerts" },
+  const globalSearchItems: GlobalSearchItem[] = [
+    ...searchWorkOrderItems,
+    ...buildNotificationSearchItems(inbox.notifications),
   ];
+  const filteredSearchResults = filterGlobalSearchItems(
+    globalSearchItems,
+    searchQuery,
+  );
+  const handleGlobalSearchResult = async (item: GlobalSearchItem) => {
+    const historySaved = await globalSearchHistory.recordSearch(searchQuery);
+    if (!historySaved) {
+      Alert.alert(
+        "Search history unavailable",
+        "The result will open, but this search could not be saved.",
+      );
+    }
+    const destination = getGlobalSearchDestination(item);
+    if (item.kind === "notification") void inbox.markRead(item.notification);
+    closeGlobalSearch();
 
-  const filteredSearchResults = searchQuery.trim()
-    ? globalSearchItems.filter((item) => {
-        const query = searchQuery.toLowerCase();
-        return (
-          item.title.toLowerCase().includes(query) ||
-          item.category.toLowerCase().includes(query)
-        );
-      })
-    : globalSearchItems;
+    if (destination.screen === "work-orders") {
+      setNotificationOrderId(destination.workOrderId);
+      setSelectedWorkOrderId(destination.workOrderId);
+      setDashboardWorkOrderFilter(null);
+      setActiveScreen("work-orders");
+      setNavigationReloadKey((key) => key + 1);
+    } else {
+      navigateTo("notifications");
+    }
+  };
 
   const renderContent = () => {
     if (startupStatus === "loading") {
@@ -538,7 +638,7 @@ export default function App() {
 
           <TouchableOpacity
             accessibilityRole="button"
-            onPress={() => setIsSearchOpen(true)}
+            onPress={openGlobalSearch}
             style={styles.searchButton}
           >
             <Svg width={18} height={18} viewBox="0 0 24 24" fill="none">
@@ -553,7 +653,11 @@ export default function App() {
             <View style={styles.searchSheet}>
               <View style={styles.searchHeaderRow}>
                 <Text style={styles.searchTitle}>Global Search</Text>
-                <TouchableOpacity onPress={() => setIsSearchOpen(false)}>
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  accessibilityLabel="Close global search"
+                  onPress={closeGlobalSearch}
+                >
                   <Text style={styles.searchClose}>Close</Text>
                 </TouchableOpacity>
               </View>
@@ -566,24 +670,124 @@ export default function App() {
                 <TextInput
                   value={searchQuery}
                   onChangeText={setSearchQuery}
-                  placeholder="Search vehicles, tasks, notifications..."
+                  onSubmitEditing={() => void globalSearchHistory.recordSearch(searchQuery)}
+                  placeholder="Search work orders, vehicles, notifications..."
                   placeholderTextColor="#94a3b8"
                   style={styles.searchInput}
                   autoFocus
+                  returnKeyType="search"
                 />
+                {searchQuery ? (
+                  <TouchableOpacity
+                    accessibilityRole="button"
+                    accessibilityLabel="Clear search text"
+                    onPress={() => setSearchQuery("")}
+                    style={styles.searchClearButton}
+                  >
+                    <Svg width={18} height={18} viewBox="0 0 24 24" fill="none">
+                      <Path
+                        d="m6 6 12 12M18 6 6 18"
+                        stroke="#64748b"
+                        strokeWidth={2}
+                        strokeLinecap="round"
+                      />
+                    </Svg>
+                  </TouchableOpacity>
+                ) : null}
               </View>
 
+              {globalSearchHistory.error ? (
+                <Text accessibilityRole="alert" style={styles.searchError}>
+                  {globalSearchHistory.error}
+                </Text>
+              ) : null}
+
               <ScrollView style={styles.searchResults} showsVerticalScrollIndicator={false}>
-                {filteredSearchResults.length > 0 ? (
-                  filteredSearchResults.map((item, index) => (
-                    <View key={`${item.title}-${index}`} style={styles.searchResultItem}>
-                      <Text style={styles.searchResultTitle}>{item.title}</Text>
-                      <Text style={styles.searchResultCategory}>{item.category}</Text>
+                {!searchQuery.trim() ? (
+                  <View style={styles.searchHistorySection}>
+                    <View style={styles.searchHistoryHeader}>
+                      <Text style={styles.searchHistoryHeading}>Recent searches</Text>
+                      {globalSearchHistory.items.length > 0 ? (
+                        <TouchableOpacity
+                          accessibilityRole="button"
+                          accessibilityLabel="Clear global search history"
+                          onPress={() => void globalSearchHistory.clearHistory()}
+                          style={styles.searchHistoryClear}
+                        >
+                          <Text style={styles.searchHistoryClearText}>Clear</Text>
+                        </TouchableOpacity>
+                      ) : null}
                     </View>
-                  ))
-                ) : (
-                  <Text style={styles.searchEmpty}>No results found.</Text>
-                )}
+                    {globalSearchHistory.loading ? (
+                      <ActivityIndicator color="#1a1f6e" style={styles.searchLoading} />
+                    ) : globalSearchHistory.error ? null : globalSearchHistory.items.length > 0 ? (
+                      globalSearchHistory.items.map((query, index) => (
+                        <TouchableOpacity
+                          key={`${query}-${index}`}
+                          accessibilityRole="button"
+                          accessibilityLabel={`Search again for ${query}`}
+                          onPress={() => setSearchQuery(query)}
+                          style={styles.searchHistoryItem}
+                        >
+                          <Text numberOfLines={1} style={styles.searchHistoryText}>
+                            {query}
+                          </Text>
+                        </TouchableOpacity>
+                      ))
+                    ) : (
+                      <Text style={styles.searchStatus}>No recent searches yet.</Text>
+                    )}
+                  </View>
+                ) : null}
+                {searchLoading || inbox.loading ? (
+                  <ActivityIndicator
+                    accessibilityLabel="Loading search results"
+                    accessibilityRole="progressbar"
+                    color="#1a1f6e"
+                    style={styles.searchLoading}
+                  />
+                ) : null}
+                {searchError ? (
+                  <Text accessibilityRole="alert" style={styles.searchError}>
+                    {searchError}
+                  </Text>
+                ) : null}
+                {inbox.error ? (
+                  <Text accessibilityRole="alert" style={styles.searchError}>
+                    {inbox.error}
+                  </Text>
+                ) : null}
+                {!searchQuery.trim() && !searchLoading ? (
+                  <Text style={styles.searchStatus}>
+                    Search your work orders and notifications.
+                  </Text>
+                ) : null}
+                {searchQuery.trim() ? (
+                  filteredSearchResults.length > 0 ? (
+                    filteredSearchResults.map((item) => (
+                      <TouchableOpacity
+                        key={item.id}
+                        accessibilityRole="button"
+                        accessibilityLabel={`${item.title}. ${
+                          item.kind === "work-order" ? "Work order" : "Notification"
+                        }. ${item.detail}`}
+                        onPress={() => void handleGlobalSearchResult(item)}
+                        style={styles.searchResultItem}
+                      >
+                        <Text style={styles.searchResultTitle}>{item.title}</Text>
+                        <Text style={styles.searchResultCategory}>
+                          {item.kind === "work-order" ? "Work Orders" : "Notifications"}
+                        </Text>
+                        <Text style={styles.searchResultDetail}>{item.detail}</Text>
+                      </TouchableOpacity>
+                    ))
+                  ) : !searchLoading &&
+                    !inbox.loading &&
+                    !searchError &&
+                    !inbox.error ? (
+                    <Text style={styles.searchEmpty}>No results found.</Text>
+                  ) : null
+                ) : null}
               </ScrollView>
             </View>
           </View>
@@ -636,15 +840,19 @@ export default function App() {
             onOpenWorkOrders={openDashboardWorkOrders}
           />
         ) : activeScreen === "work-orders" ? (
-          <WorkOrderScreen key={navigationReloadKey} accessRole={accessRole} user={user} initialOrderId={notificationOrderId} initialDashboardFilter={dashboardWorkOrderFilter} syncService={syncService} onLoadingChange={setIsPageRefreshing} />
+          <WorkOrderScreen
+            key={navigationReloadKey}
+            accessRole={accessRole}
+            user={user}
+            initialOrderId={notificationOrderId}
+            initialSelectedOrderId={selectedWorkOrderId}
+            initialDashboardFilter={dashboardWorkOrderFilter}
+            onSelectedOrderChange={setSelectedWorkOrderId}
+            syncService={syncService}
+            onLoadingChange={setIsPageRefreshing}
+          />
         ) : activeScreen === "notifications" ? (
-          <NotificationsScreen key={navigationReloadKey} notifications={inbox.notifications} loading={inbox.loading} error={inbox.error} onRefresh={() => inbox.refresh()} onLoadingChange={setIsPageRefreshing} accessRole={accessRole} onOpen={(notification) => {
-            void inbox.markRead(notification);
-            if (notification.scheduleId) {
-              setNotificationOrderId(notification.scheduleId);
-              setActiveScreen("work-orders");
-            }
-          }} />
+          <NotificationsScreen key={navigationReloadKey} notifications={inbox.notifications} loading={inbox.loading} error={inbox.error} onRefresh={() => inbox.refresh()} onLoadingChange={setIsPageRefreshing} accessRole={accessRole} onOpen={openNotification} />
         ) : (
           <ScrollView
             key={navigationReloadKey}
@@ -931,9 +1139,9 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    paddingHorizontal: 20,
-    paddingTop: 14,
-    paddingBottom: 12,
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: 8,
     backgroundColor: "#ffffff",
     borderBottomWidth: 1,
     borderBottomColor: "#e2e8f0",
@@ -941,14 +1149,14 @@ const styles = StyleSheet.create({
   headerTitleBlock: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
+    gap: 4,
     flex: 1,
   },
-  logo: { width: 56, height: 56 },
+  logo: { width: 45, height: 45 },
   headerTextBlock: { flex: 1 },
-  title: { fontSize: 24, fontWeight: "800", color: "#1a1f6e" },
-  userName: { fontSize: 13, fontWeight: "700", color: "#64748b", marginTop: 2 },
-  userRole: { fontSize: 12, color: "#64748b", marginTop: 1 },
+  title: { fontSize: 16, fontWeight: "800", color: "#1a1f6e" },
+  userName: { fontSize: 12, fontWeight: "700", color: "#64748b", marginTop: 2 },
+  userRole: { fontSize: 11, color: "#64748b", marginTop: 1 },
   searchButton: {
     width: 36,
     height: 36,
@@ -1019,8 +1227,48 @@ const styles = StyleSheet.create({
     fontSize: 14,
     paddingVertical: 0,
   },
+  searchClearButton: {
+    minWidth: 44,
+    minHeight: 44,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   searchResults: {
     maxHeight: 260,
+  },
+  searchHistorySection: {
+    marginBottom: 8,
+  },
+  searchHistoryHeader: {
+    minHeight: 44,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  searchHistoryHeading: {
+    color: "#334155",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  searchHistoryClear: {
+    minHeight: 44,
+    justifyContent: "center",
+    paddingHorizontal: 8,
+  },
+  searchHistoryClearText: {
+    color: "#1a1f6e",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  searchHistoryItem: {
+    minHeight: 44,
+    justifyContent: "center",
+    borderBottomWidth: 1,
+    borderBottomColor: "#e2e8f0",
+  },
+  searchHistoryText: {
+    color: "#334155",
+    fontSize: 14,
   },
   searchResultItem: {
     paddingVertical: 10,
@@ -1039,10 +1287,30 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
     letterSpacing: 0.5,
   },
+  searchResultDetail: {
+    color: "#64748b",
+    fontSize: 12,
+    marginTop: 2,
+  },
   searchEmpty: {
     color: "#64748b",
     paddingVertical: 12,
     textAlign: "center",
+  },
+  searchStatus: {
+    color: "#64748b",
+    fontSize: 13,
+    paddingVertical: 12,
+    textAlign: "center",
+  },
+  searchLoading: {
+    marginVertical: 12,
+  },
+  searchError: {
+    color: "#a32121",
+    fontSize: 13,
+    lineHeight: 18,
+    paddingVertical: 8,
   },
   confirmationBackdrop: {
     flex: 1,
@@ -1343,8 +1611,8 @@ const styles = StyleSheet.create({
     borderTopColor: "#e2e8f0",
     borderBottomWidth: 1,
     borderBottomColor: "#e2e8f0",
-    paddingHorizontal: 8,
-    paddingVertical: 8,
+    paddingHorizontal: 6,
+    paddingVertical: 4,
     shadowColor: "#0f172a",
     shadowOpacity: 0.06,
     shadowRadius: 4,
@@ -1366,10 +1634,10 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 10,
-    borderRadius: 10,
-    marginHorizontal: 4,
-    minHeight: 52,
+    paddingVertical: 6,
+    borderRadius: 9,
+    marginHorizontal: 3,
+    minHeight: 48,
   },
   tabButtonWide: {
     flex: 1.1,
@@ -1385,8 +1653,8 @@ const styles = StyleSheet.create({
   tabButtonText: { fontSize: 14, fontWeight: "700", color: "#64748b" },
   tabButtonTextActive: { color: "#ffffff" },
   tabIcon: {
-    fontSize: 22,
-    lineHeight: 22,
+    fontSize: 19,
+    lineHeight: 19,
     color: "#475569",
   },
   tabIconActive: {

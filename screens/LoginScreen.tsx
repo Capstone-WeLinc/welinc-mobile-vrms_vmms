@@ -3,14 +3,15 @@ import {
   ActivityIndicator,
   Image,
   KeyboardAvoidingView,
-  Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
+import { MaterialCommunityIcons } from "@expo/vector-icons";
 
 import { AuthService, type AuthenticatedUser, type EmailVerificationChallenge } from "../services/AuthService";
 
@@ -92,8 +93,12 @@ export function LoginScreen({ authService, onAuthenticated, onBack, onForgotPass
         style={styles.trucksBackground}
         resizeMode="cover"
       />
-      <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.keyboardAvoidingView}>
-        <View style={styles.cardArea}>
+      <KeyboardAvoidingView behavior="padding" style={styles.keyboardAvoidingView}>
+        <ScrollView
+          style={styles.cardScrollView}
+          contentContainerStyle={styles.cardArea}
+          keyboardShouldPersistTaps="handled"
+        >
           <View style={styles.card}>
           <TouchableOpacity
             accessibilityLabel="Back to splash screen"
@@ -144,7 +149,7 @@ export function LoginScreen({ authService, onAuthenticated, onBack, onForgotPass
             editable={!loading}
             keyboardType="email-address"
             onChangeText={setEmail}
-            placeholder="vmms.admin@welinc.com"
+            placeholder="you@welinc.com or username"
             placeholderTextColor="#64708d"
             style={styles.input}
             value={email}
@@ -167,7 +172,7 @@ export function LoginScreen({ authService, onAuthenticated, onBack, onForgotPass
               editable={!loading}
               onChangeText={setPassword}
               onSubmitEditing={() => void login()}
-              placeholder="Enter your password"
+              placeholder="Enter password"
               placeholderTextColor="#64708d"
               secureTextEntry={!showPassword}
               style={[styles.input, styles.passwordInput]}
@@ -181,10 +186,11 @@ export function LoginScreen({ authService, onAuthenticated, onBack, onForgotPass
               onPress={() => setShowPassword((value) => !value)}
               style={styles.eyeButton}
             >
-              <View style={styles.eyeOutline}>
-                <View style={styles.eyePupil} />
-                {!showPassword ? <View style={styles.eyeSlash} /> : null}
-              </View>
+              <MaterialCommunityIcons
+                color="#000000"
+                name={showPassword ? "eye-outline" : "eye-off-outline"}
+                size={22}
+              />
             </TouchableOpacity>
           </View>
 
@@ -196,7 +202,7 @@ export function LoginScreen({ authService, onAuthenticated, onBack, onForgotPass
             </>
           )}
           </View>
-        </View>
+        </ScrollView>
       </KeyboardAvoidingView>
     </View>
   );
@@ -205,7 +211,8 @@ export function LoginScreen({ authService, onAuthenticated, onBack, onForgotPass
 const styles = StyleSheet.create({
   screen: { flex: 1, position: "relative", backgroundColor: "#ffffff" },
   keyboardAvoidingView: { flex: 1, paddingHorizontal: 24 },
-  cardArea: { flex: 1, justifyContent: "center" },
+  cardScrollView: { flex: 1 },
+  cardArea: { flexGrow: 1, flexShrink: 0, justifyContent: "center", paddingVertical: 24 },
   card: {
     alignSelf: "center",
     width: "100%",
@@ -236,9 +243,6 @@ const styles = StyleSheet.create({
   passwordRow: { flexDirection: "row", alignItems: "center" },
   passwordInput: { flex: 1, paddingRight: 54 },
   eyeButton: { position: "absolute", right: 10, top: 8, minWidth: 40, minHeight: 40, alignItems: "center", justifyContent: "center" },
-  eyeOutline: { width: 20, height: 13, borderWidth: 1.5, borderColor: "#cdd5ec", borderRadius: 12, alignItems: "center", justifyContent: "center" },
-  eyePupil: { width: 5, height: 5, borderRadius: 5, backgroundColor: "#cdd5ec" },
-  eyeSlash: { position: "absolute", width: 24, height: 1.5, backgroundColor: "#cdd5ec", transform: [{ rotate: "-45deg" }] },
   button: { borderRadius: 12, minHeight: 52, alignItems: "center", justifyContent: "center", backgroundColor: "#f4c400", shadowColor: "#f4c400", shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.26, shadowRadius: 10, elevation: 5 },
   buttonPressed: { opacity: 0.72 },
   buttonText: { color: "#101958", fontSize: 16, fontWeight: "900" },

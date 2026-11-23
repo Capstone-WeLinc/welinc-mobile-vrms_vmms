@@ -25,6 +25,12 @@
     "plugins": [
       "./plugins/withAndroidCleartextTraffic",
       "expo-secure-store",
+      [
+        "expo-file-system",
+        {
+          "enableFileSharing": true
+        }
+      ],
       "expo-sqlite",
       "expo-status-bar"
     ]

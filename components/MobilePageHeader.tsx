@@ -16,7 +16,12 @@ export function MobilePageHeader({
 }
 
 const styles = StyleSheet.create({
-  container: { gap: 2 },
-  title: { fontSize: 24, fontWeight: "700", color: "#0d0d0d" },
-  subtitle: { color: "#64748b", fontSize: 13 },
+  container: { gap: 1 },
+  title: { fontSize: 20, lineHeight: 24, fontWeight: "800", color: "#1a1f6e" },
+  subtitle: {
+    color: "#64748b",
+    fontSize: 12,
+    lineHeight: 14,
+    fontWeight: "700",
+  },
 });
