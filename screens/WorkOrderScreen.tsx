@@ -59,6 +59,7 @@ import type { SyncService } from "../services/SyncService";
 import type {
   AuthenticatedUser,
   CreatedMaintenanceScheduleExtension,
+  MobileRepairReferral,
   MaintenanceScheduleExtensionHistory,
   MaintenanceScheduleExtensionRequest,
   MobileAccessRole,
@@ -148,7 +149,105 @@ type WorkOrder = {
   approvalStatus: InspectionRemark;
   mechanicSubmitted: boolean;
   workOrderProgress: string | null;
+  repairReferral: MobileRepairReferral | null;
 };
+
+function isRepairReferralStatus(
+  value: unknown,
+): value is MobileRepairReferral["status"] {
+  return (
+    value === "QUEUED" ||
+    value === "SENT" ||
+    value === "FAILED" ||
+    value === "ACCEPTED" ||
+    value === "REJECTED" ||
+    value === "CANCELLED"
+  );
+}
+
+function parseRepairReferralSnapshot(
+  value: string | null | undefined,
+): MobileRepairReferral | null {
+  if (!value) return null;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    const referral = parsed as Record<string, unknown>;
+    if (
+      typeof referral.id !== "string" ||
+      !isRepairReferralStatus(referral.status)
+    ) {
+      return null;
+    }
+    const nullableText = (field: unknown) =>
+      typeof field === "string" ? field : null;
+    return {
+      id: referral.id,
+      status: referral.status,
+      repairTicketId: nullableText(referral.repairTicketId),
+      repairTicketNumber: nullableText(referral.repairTicketNumber),
+      repairStatus: nullableText(referral.repairStatus),
+      outsideShopName: nullableText(referral.outsideShopName),
+      outcomeReason: nullableText(referral.outcomeReason),
+      lastErrorCode: nullableText(referral.lastErrorCode),
+      ...(typeof referral.createdAt === "string"
+        ? { createdAt: referral.createdAt }
+        : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function repairReferralStatusLabel(
+  status: MobileRepairReferral["status"],
+): string {
+  switch (status) {
+    case "QUEUED":
+      return "Waiting to send";
+    case "SENT":
+      return "Waiting for VRMS Admin";
+    case "FAILED":
+      return "Couldn't reach VRMS";
+    case "ACCEPTED":
+      return "Accepted by VRMS";
+    case "REJECTED":
+      return "Rejected by VRMS";
+    case "CANCELLED":
+      return "Cancelled by VRMS";
+  }
+}
+
+function repairReferralSubmissionMessage(
+  referral: MobileRepairReferral | null | undefined,
+): string {
+  if (!referral) {
+    return "The review was saved. Referral status will appear after the work order syncs.";
+  }
+  switch (referral.status) {
+    case "QUEUED":
+      return "The referral is queued for delivery. VMMS will retry automatically.";
+    case "SENT":
+      return "The referral was delivered to VRMS and is waiting for their Admin to review it.";
+    case "FAILED":
+      return "VMMS couldn't reach VRMS. Ask a VMMS Admin to retry the referral.";
+    case "ACCEPTED":
+      return `VRMS accepted the referral${referral.repairTicketNumber ? ` as ${referral.repairTicketNumber}` : ""}.`;
+    case "REJECTED":
+      return `VRMS rejected the referral${referral.outcomeReason ? `: ${referral.outcomeReason}` : "."}`;
+    case "CANCELLED":
+      return `VRMS cancelled the referral${referral.outcomeReason ? `: ${referral.outcomeReason}` : "."}`;
+  }
+}
+
+function formatRepairStatus(status: string): string {
+  return status
+    .toLowerCase()
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
 
 function wasInProgressBeforeOverdue(workOrderProgress: string | null): boolean {
   if (!workOrderProgress) return false;
@@ -859,6 +958,7 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialSelec
                 savedProgress.mechanicSubmitted ??
                 savedProgress.status === "For Verification",
               workOrderProgress: schedule.workOrderProgress,
+              repairReferral: parseRepairReferralSnapshot(schedule.repairReferral),
               ...submittedReviewState(schedule.status),
             };
           }),
@@ -1097,13 +1197,29 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialSelec
     const pending = saveQueue.current.catch(() => undefined).then(async () => {
       await localSave;
       const result = await new AuthService(API_BASE_URL).updateMaintenanceProgress(order.id, progress);
+      const repairReferralSnapshot =
+        result.repairReferral === undefined
+          ? undefined
+          : result.repairReferral === null
+            ? null
+            : JSON.stringify(result.repairReferral);
       const db = await getDatabase();
       if (progressRevision.current.get(order.id) === revision) {
         await new MaintenanceRepository(db).updateWorkOrderProgress(
           order.id,
           JSON.stringify({ ...result.workOrderProgress, _syncPending: false }),
           result.status,
+          repairReferralSnapshot,
         );
+        if (result.repairReferral !== undefined) {
+          setWorkOrders((current) =>
+            current.map((item) =>
+              item.id === order.id
+                ? { ...item, repairReferral: result.repairReferral ?? null }
+                : item,
+            ),
+          );
+        }
       }
       syncWarningShown.current = false;
       return result;
@@ -1166,10 +1282,21 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialSelec
         ...order, ...saved, status: saved.status ?? order.status,
         mechanicSubmitted: saved.mechanicSubmitted ?? order.mechanicSubmitted,
         approvalStatus: saved.approvalStatus ?? order.approvalStatus,
+        repairReferral: result.repairReferral === undefined
+          ? order.repairReferral
+          : result.repairReferral,
       } : order));
-      if (action !== "START") {
+      if (action === "REPAIR") {
+        const referral = result.repairReferral;
+        Alert.alert(
+          referral?.status === "FAILED" ? "Couldn't reach VRMS" : "Repair referral updated",
+          repairReferralSubmissionMessage(referral),
+        );
+      } else if (action !== "START") {
         Alert.alert(action === "SUBMIT" ? "Sent for Chief Mechanic Review" : "Review saved",
           action === "SUBMIT" ? "Your work is Done and awaiting chief mechanic approval." : action === "APPROVE" ? "Work order Completed." : "Work order returned for follow-up.");
+      }
+      if (action !== "START" && action !== "REPAIR") {
         closeOrder();
       }
     } catch (error) {
@@ -2672,6 +2799,67 @@ export function WorkOrderScreen({ accessRole, user, initialOrderId, initialSelec
                   <View style={styles.remarksSection}>
                     <Text style={styles.remarksLabel}>Mechanic Maintenance Remarks</Text>
                     <Text style={styles.sectionText}>{selectedOrder.maintenanceRemarks}</Text>
+                  </View>
+                ) : null}
+                {selectedOrder.repairReferral ? (
+                  <View
+                    style={[
+                      styles.remarksSection,
+                      {
+                        backgroundColor: "#f8fafc",
+                        borderWidth: 1,
+                        borderColor: "#e2e8f0",
+                        borderRadius: 10,
+                        paddingHorizontal: 12,
+                      },
+                    ]}
+                  >
+                    <Text style={styles.remarksLabel}>VRMS Repair Handoff</Text>
+                    <Text style={styles.sectionText}>
+                      Referral:{" "}
+                      {repairReferralStatusLabel(selectedOrder.repairReferral.status)}
+                    </Text>
+                    {selectedOrder.repairReferral.repairTicketNumber ? (
+                      <Text style={styles.sectionText}>
+                        Repair ticket: {selectedOrder.repairReferral.repairTicketNumber}
+                      </Text>
+                    ) : null}
+                    {selectedOrder.repairReferral.repairStatus ? (
+                      <Text style={styles.sectionText}>
+                        Repair status:{" "}
+                        {formatRepairStatus(selectedOrder.repairReferral.repairStatus)}
+                      </Text>
+                    ) : null}
+                    {selectedOrder.repairReferral.outsideShopName ? (
+                      <Text style={styles.sectionText}>
+                        Outside shop: {selectedOrder.repairReferral.outsideShopName}
+                      </Text>
+                    ) : null}
+                    {selectedOrder.repairReferral.outcomeReason ? (
+                      <Text style={styles.sectionText}>
+                        {selectedOrder.repairReferral.status === "REJECTED"
+                          ? "VRMS rejection reason"
+                          : "VRMS update"}: {selectedOrder.repairReferral.outcomeReason}
+                      </Text>
+                    ) : null}
+                  </View>
+                ) : selectedOrder.approvalStatus === "For Repair" ? (
+                  <View
+                    style={[
+                      styles.remarksSection,
+                      {
+                        backgroundColor: "#f8fafc",
+                        borderWidth: 1,
+                        borderColor: "#e2e8f0",
+                        borderRadius: 10,
+                        paddingHorizontal: 12,
+                      },
+                    ]}
+                  >
+                    <Text style={styles.remarksLabel}>VRMS Repair Handoff</Text>
+                    <Text style={styles.sectionText}>
+                      Referral status is not available yet. Refresh the work order after syncing.
+                    </Text>
                   </View>
                 ) : null}
 
