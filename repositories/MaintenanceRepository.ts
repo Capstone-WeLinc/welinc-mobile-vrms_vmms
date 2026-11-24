@@ -40,8 +40,8 @@ export class MaintenanceRepository {
     try {
       await this.db.runAsync(
         `INSERT INTO maintenance_schedules
-          (id, workOrderNumber, vehicleId, title, garageId, status, priority, startDate, assignedMechanic, assignedMechanicId, chiefMechanicId, accountType, checklistTemplateId, odometerReading, triggerType, intervalKm, bufferDistanceKm, startingReferenceReadingKm, intervalType, startReferenceDate, previousScheduleId, partsCost, laborCost, totalCost, workOrderProgress, deletedAt, createdAt, updatedAt)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          (id, workOrderNumber, vehicleId, title, garageId, status, priority, startDate, assignedMechanic, assignedMechanicId, chiefMechanicId, accountType, checklistTemplateId, odometerReading, triggerType, intervalKm, bufferDistanceKm, startingReferenceReadingKm, intervalType, startReferenceDate, previousScheduleId, partsCost, laborCost, totalCost, workOrderProgress, repairReferral, deletedAt, createdAt, updatedAt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         schedule.id,
         schedule.workOrderNumber,
         schedule.vehicleId,
@@ -67,6 +67,7 @@ export class MaintenanceRepository {
         schedule.laborCost,
         schedule.totalCost,
         schedule.workOrderProgress,
+        schedule.repairReferral ?? null,
         schedule.deletedAt,
         schedule.createdAt,
         schedule.updatedAt,
@@ -119,14 +120,18 @@ export class MaintenanceRepository {
     scheduleId: string,
     workOrderProgress: string,
     status?: string,
+    repairReferral?: string | null,
   ): Promise<void> {
     await this.db.runAsync(
       `UPDATE maintenance_schedules
        SET workOrderProgress = ?,
-           status = COALESCE(?, status)
+           status = COALESCE(?, status),
+           repairReferral = CASE WHEN ? = 1 THEN ? ELSE repairReferral END
        WHERE id = ?`,
       workOrderProgress,
       status ?? null,
+      repairReferral === undefined ? 0 : 1,
+      repairReferral ?? null,
       scheduleId,
     );
   }
@@ -136,6 +141,7 @@ export class MaintenanceRepository {
     revision: number | null,
     workOrderProgress: string,
     status?: string,
+    repairReferral?: string | null,
   ): Promise<boolean> {
     const current = await this.db.getFirstAsync<{
       workOrderProgress: string | null;
@@ -150,6 +156,7 @@ export class MaintenanceRepository {
       scheduleId,
       workOrderProgress,
       status,
+      repairReferral,
     );
     return true;
   }
@@ -165,8 +172,9 @@ export class MaintenanceRepository {
         const current = await this.db.getFirstAsync<{
           workOrderProgress: string | null;
           status: string | null;
+          repairReferral: string | null;
         }>(
-          "SELECT workOrderProgress, status FROM maintenance_schedules WHERE id = ?",
+          "SELECT workOrderProgress, status, repairReferral FROM maintenance_schedules WHERE id = ?",
           schedule.id,
         );
         const hasPendingProgress = hasPendingWorkOrderProgress(
@@ -178,6 +186,10 @@ export class MaintenanceRepository {
         const status = hasPendingProgress
           ? current?.status ?? schedule.status
           : schedule.status;
+        const repairReferral =
+          schedule.repairReferral === undefined
+            ? current?.repairReferral ?? null
+            : schedule.repairReferral;
 
         await this.db.runAsync(
           "INSERT OR IGNORE INTO incoming_schedule_ids (id) VALUES (?)",
@@ -185,8 +197,8 @@ export class MaintenanceRepository {
         );
         await this.db.runAsync(
           `INSERT INTO maintenance_schedules
-            (id, workOrderNumber, vehicleId, title, garageId, status, priority, startDate, assignedMechanic, assignedMechanicId, chiefMechanicId, accountType, checklistTemplateId, odometerReading, triggerType, intervalKm, bufferDistanceKm, startingReferenceReadingKm, intervalType, startReferenceDate, previousScheduleId, partsCost, laborCost, totalCost, workOrderProgress, deletedAt, createdAt, updatedAt)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, workOrderNumber, vehicleId, title, garageId, status, priority, startDate, assignedMechanic, assignedMechanicId, chiefMechanicId, accountType, checklistTemplateId, odometerReading, triggerType, intervalKm, bufferDistanceKm, startingReferenceReadingKm, intervalType, startReferenceDate, previousScheduleId, partsCost, laborCost, totalCost, workOrderProgress, repairReferral, deletedAt, createdAt, updatedAt)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(id) DO UPDATE SET
              workOrderNumber = excluded.workOrderNumber,
              vehicleId = excluded.vehicleId,
@@ -211,6 +223,7 @@ export class MaintenanceRepository {
              partsCost = excluded.partsCost,
              laborCost = excluded.laborCost,
              totalCost = excluded.totalCost,
+             repairReferral = excluded.repairReferral,
              workOrderProgress = CASE
                WHEN excluded.workOrderProgress IS NULL
                  AND maintenance_schedules.workOrderProgress IS NOT NULL
@@ -237,6 +250,8 @@ export class MaintenanceRepository {
                 AND excluded.workOrderNumber != ''
               ) OR (
                 maintenance_schedules.deletedAt IS NULL AND excluded.deletedAt IS NOT NULL
+              ) OR (
+                maintenance_schedules.repairReferral IS NOT excluded.repairReferral
               )`,
           schedule.id,
           schedule.workOrderNumber,
@@ -263,6 +278,7 @@ export class MaintenanceRepository {
           schedule.laborCost,
           schedule.totalCost,
           workOrderProgress,
+          repairReferral,
           schedule.deletedAt,
           schedule.createdAt,
           schedule.updatedAt,

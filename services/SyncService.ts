@@ -12,6 +12,7 @@ import type {
   MaintenanceSchedule,
   Vehicle,
 } from "../database/tables";
+import type { MobileRepairReferral } from "./AuthService";
 import { ChecklistRepository } from "../repositories/ChecklistRepository";
 import { MaintenanceRepository } from "../repositories/MaintenanceRepository";
 import { VehicleRepository } from "../repositories/VehicleRepository";
@@ -82,6 +83,7 @@ interface ServerMaintenanceSchedule {
   previous_schedule_id?: string | null;
   workOrderProgress?: string | null;
   work_order_progress?: string | null;
+  repairReferral?: MobileRepairReferral | null;
   deletedAt?: string | null;
   deleted_at?: string | null;
   createdAt?: string;
@@ -307,13 +309,21 @@ export class SyncService {
         const response = await this.api.patch<{
           status?: string;
           workOrderProgress?: Record<string, unknown>;
+          repairReferral?: MobileRepairReferral | null;
         }>(`/maintenance-schedules/${schedule.id}/progress`, progress);
         const confirmedProgress = response.data.workOrderProgress ?? progress;
+        const repairReferral =
+          response.data.repairReferral === undefined
+            ? undefined
+            : response.data.repairReferral === null
+              ? null
+              : JSON.stringify(response.data.repairReferral);
         await repository.confirmPendingWorkOrderProgress(
           schedule.id,
           localRevision,
           JSON.stringify({ ...confirmedProgress, _syncPending: false }),
           response.data.status,
+          repairReferral,
         );
       } catch (error) {
         console.warn(
@@ -411,6 +421,7 @@ function mapMaintenanceSchedule(
 ): MaintenanceSchedule {
   const scheduleRecord = record as unknown as Record<string, unknown>;
   const rawPriority = extractStringValue(scheduleRecord, ["priority"]);
+  const repairReferral = getValue(scheduleRecord, ["repairReferral"]);
 
   return {
     id: requireText(getValue(scheduleRecord, ["id"]), "maintenanceSchedule.id"),
@@ -564,6 +575,9 @@ function mapMaintenanceSchedule(
           "workorderprogress",
         ]),
       ) ?? null,
+    ...(repairReferral === undefined
+      ? {}
+      : { repairReferral: serializeOptionalText(repairReferral) }),
     deletedAt:
       serializeOptionalText(
         findFirstValue(scheduleRecord, [

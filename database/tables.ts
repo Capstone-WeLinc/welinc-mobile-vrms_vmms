@@ -77,6 +77,7 @@ export interface MaintenanceSchedule {
   laborCost: number | null;
   totalCost: number | null;
   workOrderProgress: string | null; // JSON stored as string
+  repairReferral?: string | null; // Latest VRMS referral metadata, not repair history
   deletedAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -141,6 +142,7 @@ export const CREATE_TABLES_SQL = `
     laborCost REAL,
     totalCost REAL,
     workOrderProgress TEXT,
+    repairReferral TEXT,
     deletedAt TEXT,
     createdAt TEXT NOT NULL,
     updatedAt TEXT NOT NULL,

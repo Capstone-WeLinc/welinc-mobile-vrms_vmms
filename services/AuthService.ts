@@ -34,6 +34,18 @@ export interface MobileUserSummary {
   temporaryRoles?: string[];
 }
 
+export interface MobileRepairReferral {
+  id: string;
+  status: "QUEUED" | "SENT" | "FAILED" | "ACCEPTED" | "REJECTED" | "CANCELLED";
+  repairTicketId: string | null;
+  repairTicketNumber: string | null;
+  repairStatus: string | null;
+  outsideShopName: string | null;
+  outcomeReason: string | null;
+  lastErrorCode: string | null;
+  createdAt?: string;
+}
+
 export interface MaintenanceScheduleExtensionRequest {
   id: string;
   actorName: string;
@@ -314,7 +326,11 @@ export class AuthService {
   async updateMaintenanceProgress(
     scheduleId: string,
     progress: Record<string, unknown>,
-  ): Promise<{ status: string; workOrderProgress: Record<string, unknown> }> {
+  ): Promise<{
+    status: string;
+    workOrderProgress: Record<string, unknown>;
+    repairReferral?: MobileRepairReferral | null;
+  }> {
     const token = await this.getAccessToken();
     if (!token) throw new Error("Please log in again.");
     const response = await this.api.patch(

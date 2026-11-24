@@ -424,6 +424,7 @@ async function ensureMaintenanceSchedulesSchema(
         laborCost REAL,
         totalCost REAL,
         workOrderProgress TEXT,
+        repairReferral TEXT,
         deletedAt TEXT,
         createdAt TEXT NOT NULL,
         updatedAt TEXT NOT NULL,
@@ -527,6 +528,12 @@ async function ensureMaintenanceSchedulesSchema(
     db,
     "maintenance_schedules",
     "workOrderProgress",
+    "TEXT",
+  );
+  await addColumnIfMissing(
+    db,
+    "maintenance_schedules",
+    "repairReferral",
     "TEXT",
   );
   await addColumnIfMissing(db, "maintenance_schedules", "deletedAt", "TEXT");
