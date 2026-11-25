@@ -21,6 +21,7 @@ import { sortWorkOrdersForQueue } from "./workOrderPriority";
 import {
   dashboardWorkOrderStatuses,
   matchesWorkOrderDashboardFilter,
+  wasInProgressBeforeOverdue,
   type DashboardWorkOrderFilter,
 } from "./workOrderDashboardFilter";
 import { formatWorkOrderDate as formatReadableDate } from "../services/workOrderDates";
@@ -247,18 +248,6 @@ function formatRepairStatus(status: string): string {
     .toLowerCase()
     .replace(/_/g, " ")
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
-}
-
-function wasInProgressBeforeOverdue(workOrderProgress: string | null): boolean {
-  if (!workOrderProgress) return false;
-  try {
-    const progress = JSON.parse(workOrderProgress) as {
-      overdueFromStatus?: unknown;
-    };
-    return progress.overdueFromStatus === "IN_PROGRESS";
-  } catch {
-    return false;
-  }
 }
 
 function getApiErrorMessage(error: unknown, fallback: string): string {

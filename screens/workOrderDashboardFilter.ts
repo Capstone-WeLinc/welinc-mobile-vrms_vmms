@@ -17,11 +17,28 @@ export type DashboardWorkOrderFilter = {
   mechanicName: string | null;
 };
 
+export function wasInProgressBeforeOverdue(workOrderProgress?: string | null): boolean {
+  if (!workOrderProgress) return false;
+  try {
+    const progress: unknown = JSON.parse(workOrderProgress);
+    return (
+      typeof progress === "object" &&
+      progress !== null &&
+      !Array.isArray(progress) &&
+      "overdueFromStatus" in progress &&
+      progress.overdueFromStatus === "IN_PROGRESS"
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function matchesWorkOrderDashboardFilter(
   order: {
     status: string;
     mechanicSubmitted: boolean;
     assignedMechanicId: string | null;
+    workOrderProgress?: string | null;
   },
   statusFilter: string | null,
   mechanicFilterId: string | null,
@@ -48,8 +65,13 @@ export function matchesWorkOrderDashboardFilter(
         ].includes(order.status) &&
         !order.mechanicSubmitted
       );
-    case "Due":
     case "In Progress":
+      return (
+        order.status === statusFilter ||
+        (order.status === "Overdue" &&
+          wasInProgressBeforeOverdue(order.workOrderProgress))
+      );
+    case "Due":
     case "Overdue":
     case "Completed":
       return order.status === statusFilter;
