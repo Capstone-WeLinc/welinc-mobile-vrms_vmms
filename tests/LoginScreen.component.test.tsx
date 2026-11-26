@@ -70,26 +70,26 @@ test("requests a reset code, resets the password, and returns to sign-in", async
     expect(view.getByText("Set a new password")).toBeTruthy();
   });
   expect(
-    view.getByPlaceholderText("At least 8 characters").props.secureTextEntry,
+    view.getByPlaceholderText("New Password").props.secureTextEntry,
   ).toBe(true);
   await fireEvent.press(view.getByRole("button", { name: "Show password" }));
   expect(
-    view.getByPlaceholderText("At least 8 characters").props.secureTextEntry,
+    view.getByPlaceholderText("New Password").props.secureTextEntry,
   ).toBe(false);
   await fireEvent.press(view.getByRole("button", { name: "Hide password" }));
   expect(
-    view.getByPlaceholderText("At least 8 characters").props.secureTextEntry,
+    view.getByPlaceholderText("New Password").props.secureTextEntry,
   ).toBe(true);
 
   await fireEvent.changeText(
-    view.getByPlaceholderText("At least 8 characters"),
+    view.getByPlaceholderText("New Password"),
     "NewPassword1!",
   );
   await fireEvent.changeText(
-    view.getByPlaceholderText("Type it again"),
+    view.getByPlaceholderText("Confirm Password"),
     "NewPassword1!",
   );
-  await fireEvent.press(view.getByRole("button", { name: "Set password" }));
+  await fireEvent.press(view.getByRole("button", { name: "Change Password" }));
 
   await waitFor(() => {
     expect(resetPassword).toHaveBeenCalledWith({
@@ -132,17 +132,17 @@ test("rejects a password that does not meet the auth policy", async () => {
   await fireEvent.press(view.getByRole("button", { name: "Verify" }));
   await waitFor(() => expect(view.getByText("Set a new password")).toBeTruthy());
   await fireEvent.changeText(
-    view.getByPlaceholderText("At least 8 characters"),
+    view.getByPlaceholderText("New Password"),
     "weak",
   );
   await fireEvent.changeText(
-    view.getByPlaceholderText("Type it again"),
+    view.getByPlaceholderText("Confirm Password"),
     "weak",
   );
-  await fireEvent.press(view.getByRole("button", { name: "Set password" }));
+  await fireEvent.press(view.getByRole("button", { name: "Change Password" }));
 
   expect(
-    view.getByText(/Use at least 8 characters/),
+    view.getByText("Password doesn't meet all requirements."),
   ).toBeTruthy();
   expect(resetPassword).not.toHaveBeenCalled();
 });
