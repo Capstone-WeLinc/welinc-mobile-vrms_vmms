@@ -29,6 +29,10 @@ import { MobilePageHeader } from "../components/MobilePageHeader";
 import { MaintenanceStatusLegend } from "../components/MaintenanceStatusLegend";
 import { isLaterDateOnly, isValidDateOnly } from "./scheduleExtensionDate";
 import { buildWorkOrderPdfHtml } from "./workOrderPdf";
+import {
+  getAutomaticInspectionRemark,
+  type InspectionRemark,
+} from "./inspectionRemark";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -108,8 +112,6 @@ type InspectionItem = {
   status: "pass" | "fail" | "pending";
   note: string;
 };
-
-type InspectionRemark = "Verified" | "Rejected" | "For Repair" | "Unverified";
 
 type ScheduleDetail = {
   label: string;
@@ -496,28 +498,6 @@ const reconcileInspectionItems = (
       note: typeof saved?.note === "string" ? saved.note : "",
     };
   });
-};
-
-const getAutomaticInspectionRemark = (
-  inspectionItems: InspectionItem[],
-): InspectionRemark => {
-  if (
-    inspectionItems.length === 0 ||
-    inspectionItems.some((item) => item.status === "pending")
-  ) {
-    return "Unverified";
-  }
-
-  const failCount = inspectionItems.filter(
-    (item) => item.status === "fail",
-  ).length;
-  const passCount = inspectionItems.filter(
-    (item) => item.status === "pass",
-  ).length;
-
-  if (failCount > passCount) return "For Repair";
-  if (failCount > 0) return "Rejected";
-  return "Verified";
 };
 
 const resolveChecklistTemplate = async (
