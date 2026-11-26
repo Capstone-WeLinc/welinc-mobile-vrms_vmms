@@ -35,7 +35,14 @@ jest.mock("../database/database", () => ({
 }));
 
 jest.mock("../services/useNotifications", () => ({
-  useNotifications: () => ({}),
+  useNotifications: () => ({
+    notifications: [],
+    unreadCount: 0,
+    loading: false,
+    error: null,
+    refresh: jest.fn().mockResolvedValue(undefined),
+    markRead: jest.fn().mockResolvedValue(undefined),
+  }),
 }));
 
 jest.mock("../screens/SplashScreen", () => ({
