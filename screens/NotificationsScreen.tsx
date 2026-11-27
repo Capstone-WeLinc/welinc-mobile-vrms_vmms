@@ -14,11 +14,23 @@ const notificationColors = {
   FUEL_ANOMALY: workOrderStatusColors.overdue,
   ESCALATION: { backgroundColor: "#fff7ed", borderColor: "#c2410c" },
   CRITICAL_ESCALATION: { backgroundColor: "#fff1f2", borderColor: "#b91c1c" },
+  REPORT: { backgroundColor: "#eff6ff", borderColor: "#2563eb" },
+  GENERAL: { backgroundColor: "#f8fafc", borderColor: "#94a3b8" },
 };
 
-const labels = { CREATED: "New assignment", DUE: "Due", OVERDUE: "Overdue", ODOMETER_BUFFER: "Odometer reminder", FUEL_ANOMALY: "Fuel anomaly", ESCALATION: "Overdue escalation", CRITICAL_ESCALATION: "Critical escalation" };
+const labels = {
+  CREATED: "New assignment",
+  DUE: "Due",
+  OVERDUE: "Overdue",
+  ODOMETER_BUFFER: "Odometer reminder",
+  FUEL_ANOMALY: "Fuel anomaly",
+  ESCALATION: "Overdue escalation",
+  CRITICAL_ESCALATION: "Critical escalation",
+  REPORT: "Fleet report",
+  GENERAL: "Notification",
+};
 
-export function NotificationsScreen({ notifications, loading, error, onRefresh, onOpen, onLoadingChange, accessRole }: {
+export function NotificationsScreen({ notifications, loading, error, onRefresh, onOpen, onLoadingChange, accessRole, unreadCount = 0, totalCount = notifications.length, hasMore = false, loadingMore = false, onLoadMore, onMarkAllRead }: {
   notifications: MaintenanceNotification[];
   loading: boolean;
   error: string | null;
@@ -26,6 +38,12 @@ export function NotificationsScreen({ notifications, loading, error, onRefresh, 
   onOpen: (notification: MaintenanceNotification) => void;
   onLoadingChange?: (loading: boolean) => void;
   accessRole: "chiefMechanic" | "mechanic";
+  unreadCount?: number;
+  totalCount?: number;
+  hasMore?: boolean;
+  loadingMore?: boolean;
+  onLoadMore?: () => void | Promise<void>;
+  onMarkAllRead?: () => void | Promise<void>;
 }) {
   const [pullRefreshing, setPullRefreshing] = useState(false);
   const [fuelAnomalies, setFuelAnomalies] = useState<FuelAnomalyApproval[]>([]);
@@ -98,6 +116,18 @@ export function NotificationsScreen({ notifications, loading, error, onRefresh, 
     <ScrollView testID="notifications-scroll-view" contentContainerStyle={styles.container} refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={() => { void handlePullRefresh().catch(() => undefined); }} colors={["#1a1f6e", "#d4a93f"]} tintColor="#1a1f6e" progressBackgroundColor="#ffffff" />}>
       <MobilePageHeader title="Notifications" subtitle="Maintenance updates and alerts" />
       <MaintenanceStatusLegend />
+      <View style={styles.inboxActions}>
+        <Text style={styles.inboxCount}>{unreadCount} unread · {totalCount} total</Text>
+        <TouchableOpacity
+          accessibilityRole="button"
+          accessibilityLabel="Mark all notifications as read"
+          onPress={() => void onMarkAllRead?.()}
+          disabled={!unreadCount || !onMarkAllRead}
+          style={[styles.markAllButton, (!unreadCount || !onMarkAllRead) && styles.disabledButton]}
+        >
+          <Text style={styles.markAllButtonText}>Mark all read</Text>
+        </TouchableOpacity>
+      </View>
       {shouldShowFuelAnomalyApprovalPanel(accessRole) ? (
         <View style={styles.approvalSection}>
           <Text style={styles.sectionTitle}>Critical Fuel Anomalies</Text>
@@ -130,12 +160,30 @@ export function NotificationsScreen({ notifications, loading, error, onRefresh, 
           <Text style={styles.date}>{new Date(item.createdAt).toLocaleString()}</Text>
         </TouchableOpacity>
       ))}
+      {hasMore && onLoadMore ? (
+        <TouchableOpacity
+          accessibilityRole="button"
+          onPress={() => void onLoadMore()}
+          disabled={loadingMore}
+          style={[styles.loadMoreButton, loadingMore && styles.disabledButton]}
+        >
+          <Text style={styles.loadMoreButtonText}>
+            {loadingMore ? "Loading older notifications..." : "Load older notifications"}
+          </Text>
+        </TouchableOpacity>
+      ) : null}
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
   container: { padding: 20, gap: 12, flexGrow: 1 },
+  inboxActions: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 },
+  inboxCount: { color: "#555", fontSize: 13 },
+  markAllButton: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, backgroundColor: "#1a1f6e" },
+  markAllButtonText: { color: "#fff", fontWeight: "700" },
+  loadMoreButton: { alignItems: "center", paddingVertical: 12, borderRadius: 8, borderWidth: 1, borderColor: "#1a1f6e" },
+  loadMoreButtonText: { color: "#1a1f6e", fontWeight: "700" },
   card: { padding: 16, borderRadius: 12, backgroundColor: "#fff", borderWidth: 1, borderColor: "#dedede" },
 
   row: { flexDirection: "row", justifyContent: "space-between", marginBottom: 8 },

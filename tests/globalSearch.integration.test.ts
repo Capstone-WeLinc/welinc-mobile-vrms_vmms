@@ -81,10 +81,13 @@ test("trims and case-folds searches across work orders and notifications", () =>
       id: "notification-1",
       scheduleId: "schedule-1",
       kind: "OVERDUE",
+      title: "Maintenance overdue",
       message: "Vehicle service is overdue",
       createdAt: "2026-01-01T00:00:00.000Z",
       readAt: null,
       source: "maintenance",
+      category: "MAINTENANCE",
+      actionTarget: { type: "MAINTENANCE_SCHEDULE", id: "schedule-1" },
     },
   ]);
 
@@ -116,18 +119,24 @@ test("routes search results through accessible existing workflows", () => {
       id: "scheduled",
       scheduleId: "schedule-1",
       kind: "DUE",
+      title: "Maintenance due",
       message: "A schedule is due",
       createdAt: "2026-01-01T00:00:00.000Z",
       readAt: null,
       source: "maintenance",
+      category: "MAINTENANCE",
+      actionTarget: { type: "MAINTENANCE_SCHEDULE", id: "schedule-1" },
     },
     {
       id: "general",
       kind: "FUEL_ANOMALY",
+      title: "Fuel efficiency anomaly",
       message: "Fuel anomaly requires review",
       createdAt: "2026-01-01T00:00:00.000Z",
       readAt: null,
       source: "general",
+      category: "FUEL",
+      actionTarget: { type: "FUEL_MANAGEMENT", id: "fuel-anomaly-1" },
     },
   ]);
 
