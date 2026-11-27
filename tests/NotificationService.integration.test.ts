@@ -28,7 +28,13 @@ jest.mock("../services/mobileAuthRefresh", () => ({
 
 // Import after registering mocks so the service receives the mocked clients.
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const { acknowledgeFuelAnomaly, getFuelAnomalyApprovals } = require("../services/NotificationService");
+const {
+  acknowledgeFuelAnomaly,
+  getFuelAnomalyApprovals,
+  getNotifications,
+  markAllNotificationsRead,
+  markNotificationRead,
+} = require("../services/NotificationService");
 
 const approval = {
   id: "8f47cbdb-ff72-4d71-a8e6-9f4e41926358",
@@ -65,5 +71,54 @@ test("uses the backend fuel approval contract to fetch and acknowledge as mobile
   expect(mockApiClient.post).toHaveBeenCalledWith(
     `/fuel/anomalies/${approval.id}/acknowledge`,
     { remark: "Checked against the receipt." },
+  );
+});
+
+test("loads and updates the unified inbox contract", async () => {
+  const inbox = {
+    items: [
+      {
+        id: "notification-1",
+        source: "general",
+        category: "FUEL",
+        title: "Fuel efficiency anomaly",
+        message: "ABC-1234 needs review.",
+        isRead: false,
+        createdAt: "2026-11-28T01:00:00.000Z",
+        actionTarget: { type: "FUEL_MANAGEMENT", id: "anomaly-1" },
+      },
+    ],
+    nextCursor: "opaque-cursor",
+    counts: { total: 34, unread: 2 },
+  };
+  mockApiClient.get.mockResolvedValue({ data: inbox });
+  mockApiClient.patch
+    .mockResolvedValueOnce({ data: { updated: 1 } })
+    .mockResolvedValueOnce({ data: { updated: 3 } });
+
+  const page = await getNotifications();
+
+  expect(mockApiClient.get).toHaveBeenCalledWith("/notifications/inbox", {
+    params: { limit: 30 },
+  });
+  expect(page.items[0]).toMatchObject({
+    kind: "FUEL_ANOMALY",
+    source: "general",
+    category: "FUEL",
+    readAt: null,
+    actionTarget: { type: "FUEL_MANAGEMENT", id: "anomaly-1" },
+  });
+  expect(page.counts).toEqual({ total: 34, unread: 2 });
+  expect(page.nextCursor).toBe("opaque-cursor");
+
+  await expect(markNotificationRead("notification-1", "general")).resolves.toBe(true);
+  expect(mockApiClient.patch).toHaveBeenNthCalledWith(
+    1,
+    "/notifications/inbox/general/notification-1/read",
+  );
+  await markAllNotificationsRead();
+  expect(mockApiClient.patch).toHaveBeenNthCalledWith(
+    2,
+    "/notifications/inbox/read-all",
   );
 });

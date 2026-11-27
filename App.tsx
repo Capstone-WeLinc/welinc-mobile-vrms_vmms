@@ -514,9 +514,13 @@ export default function App() {
 
   const openNotification = (notification: MaintenanceNotification) => {
     void inbox.markRead(notification);
-    if (notification.scheduleId) {
-      setNotificationOrderId(notification.scheduleId);
-      setSelectedWorkOrderId(notification.scheduleId);
+    const scheduleId =
+      notification.actionTarget?.type === "MAINTENANCE_SCHEDULE"
+        ? notification.actionTarget.id
+        : notification.scheduleId;
+    if (scheduleId) {
+      setNotificationOrderId(scheduleId);
+      setSelectedWorkOrderId(scheduleId);
       setDashboardWorkOrderFilter(null);
       setActiveScreen("work-orders");
       setNavigationReloadKey((key) => key + 1);
@@ -852,7 +856,22 @@ export default function App() {
             onLoadingChange={setIsPageRefreshing}
           />
         ) : activeScreen === "notifications" ? (
-          <NotificationsScreen key={navigationReloadKey} notifications={inbox.notifications} loading={inbox.loading} error={inbox.error} onRefresh={() => inbox.refresh()} onLoadingChange={setIsPageRefreshing} accessRole={accessRole} onOpen={openNotification} />
+          <NotificationsScreen
+            key={navigationReloadKey}
+            notifications={inbox.notifications}
+            loading={inbox.loading}
+            error={inbox.error}
+            onRefresh={() => inbox.refresh()}
+            onLoadingChange={setIsPageRefreshing}
+            accessRole={accessRole}
+            onOpen={openNotification}
+            unreadCount={inbox.unreadCount}
+            totalCount={inbox.totalCount}
+            hasMore={inbox.hasMore}
+            loadingMore={inbox.loadingMore}
+            onLoadMore={inbox.loadMore}
+            onMarkAllRead={inbox.markAllRead}
+          />
         ) : (
           <ScrollView
             key={navigationReloadKey}

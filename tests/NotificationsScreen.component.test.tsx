@@ -58,6 +58,29 @@ test("renders the approval panel for Chief Mechanic and hides it from Mechanic",
   expect(mockedGetApprovals).not.toHaveBeenCalled();
 });
 
+test("supports mark-all-read and loading an older inbox page", async () => {
+  const onMarkAllRead = jest.fn().mockResolvedValue(undefined);
+  const onLoadMore = jest.fn().mockResolvedValue(undefined);
+  const view = await render(
+    <NotificationsScreen
+      {...props("mechanic")}
+      unreadCount={4}
+      totalCount={48}
+      hasMore
+      onMarkAllRead={onMarkAllRead}
+      onLoadMore={onLoadMore}
+    />,
+  );
+
+  expect(view.getByText("4 unread · 48 total")).toBeTruthy();
+  await fireEvent.press(view.getByRole("button", { name: "Mark all notifications as read" }));
+  await fireEvent.press(view.getByRole("button", { name: "Load older notifications" }));
+  await waitFor(() => {
+    expect(onMarkAllRead).toHaveBeenCalledTimes(1);
+    expect(onLoadMore).toHaveBeenCalledTimes(1);
+  });
+});
+
 test("hides the approval panel when the role changes from Chief Mechanic to Mechanic", async () => {
   const view = await render(<NotificationsScreen {...props("chiefMechanic")} />);
 
